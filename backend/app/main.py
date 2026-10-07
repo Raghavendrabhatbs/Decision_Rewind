@@ -12,6 +12,14 @@ from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.config import APP_NAME
+from backend.app.services.universal_log import (
+    _decode_payload,
+    install_application_log_capture,
+    universal_log,
+)
+
+install_application_log_capture()
+
 from backend.app.counterfactual.replay import analyze_correction
 from backend.app.dataset.generator import DEFAULT_DATASET_SIZE, generate_dataset
 from backend.app.llm.provider import LLMProvider
@@ -28,21 +36,18 @@ from backend.app.recovery.recovery import select_recovery_queue
 from backend.app.schemas.models import AIChatRequest, Correction, ExplainRequest
 from backend.app.services.store import store
 from backend.app.services.dataset_store import EDITABLE_FEATURES, dataset_store
-from backend.app.services.universal_log import (
-    _decode_payload,
-    install_application_log_capture,
-    universal_log,
-)
 from backend.app.verification.verifier import deterministic_verifier
 from backend.app.provenance.graph import FEATURE_TO_DECISIONS
-
-install_application_log_capture()
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    dataset_store.fail_interrupted_training_jobs()
-    yield
+    universal_log.record("application.started", "backend", {"app": APP_NAME})
+    try:
+        dataset_store.fail_interrupted_training_jobs()
+        yield
+    finally:
+        universal_log.record("application.stopped", "backend", {"app": APP_NAME})
 
 
 app = FastAPI(title=APP_NAME, lifespan=lifespan)

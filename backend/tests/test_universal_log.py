@@ -3,7 +3,7 @@ import logging
 
 from fastapi.testclient import TestClient
 
-from backend.app.services.universal_log import UniversalLog, UniversalLogHandler
+from backend.app.services.universal_log import UniversalLog
 
 
 def test_universal_log_appends_json_lines_redacts_secrets_and_reads_recent(tmp_path):
@@ -66,7 +66,10 @@ def test_ai_explanations_receive_recent_universal_log(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "universal_log", log)
 
     def explain(question, evidence):
-        assert evidence["recent_universal_log"][-1]["event_type"] == "workflow.correction.applied"
+        assert any(
+            record["event_type"] == "workflow.correction.applied"
+            for record in evidence["recent_universal_log"]
+        )
         return {"source": "groq:test-model", "answer": "Explained.", "evidence": evidence}
 
     monkeypatch.setattr(main.llm, "explain", explain)
@@ -94,17 +97,10 @@ def test_application_logging_handler_writes_python_log_records(tmp_path, monkeyp
 
     log = UniversalLog(tmp_path / "universal_log.jsonl")
     monkeypatch.setattr(universal_log_module, "universal_log", log)
-    record = logging.LogRecord(
-        "backend.app.test",
-        logging.ERROR,
-        "test.py",
-        12,
+    logging.getLogger("backend.app.test").error(
         "Application failure: %s",
-        ("database unavailable",),
-        None,
+        "database unavailable",
     )
-
-    UniversalLogHandler().emit(record)
 
     captured = log.recent(1)[0]
     assert captured["event_type"] == "application.log"
@@ -128,6 +124,31 @@ def test_frontend_application_logs_are_ingested_and_redacted(tmp_path, monkeypat
         )
 
     assert response.status_code == 204
-    captured = log.recent(1)[0]
+    captured = next(
+        record for record in log.recent(10)
+        if record["event_type"] == "frontend.application_error"
+    )
     assert captured["source"] == "frontend.browser"
     assert captured["details"]["message"] == "Request used [REDACTED]"
+
+
+def test_frontend_log_endpoint_rejects_oversized_and_invalid_events(tmp_path, monkeypatch):
+    from backend.app import main
+
+    monkeypatch.setattr(main, "universal_log", UniversalLog(tmp_path / "universal_log.jsonl"))
+    with TestClient(main.app) as client:
+        invalid = client.post(
+            "/api/universal-log/client",
+            json={"event_type": "api.request.completed", "source": "browser", "details": {}},
+        )
+        oversized = client.post(
+            "/api/universal-log/client",
+            json={
+                "event_type": "frontend.console",
+                "source": "browser",
+                "details": {"message": "x" * 17_000},
+            },
+        )
+
+    assert invalid.status_code == 422
+    assert oversized.status_code == 413
