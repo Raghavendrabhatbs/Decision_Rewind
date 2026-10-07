@@ -205,14 +205,38 @@ const EDITABLE_FEATURES: Array<keyof EventRecord> = [
 ];
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
-  const body = await response.json();
+  let response: Response;
+  const request = { method: init?.method ?? 'GET', path: new URL(url, window.location.origin).pathname };
+  try {
+    response = await fetch(url, init);
+  } catch (cause) {
+    recordFrontendLog('frontend.api_request_failed', {
+      ...request,
+      error: cause instanceof Error ? cause.message : String(cause),
+    });
+    throw cause;
+  }
+  let body: { detail?: unknown };
+  try {
+    body = await response.json();
+  } catch (cause) {
+    recordFrontendLog('frontend.api_response_invalid', {
+      ...request,
+      status: response.status,
+      error: cause instanceof Error ? cause.message : String(cause),
+    });
+    throw cause;
+  }
   if (!response.ok) {
     const detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail ?? body);
-    throw new Error(detail || `Request failed (${response.status}).`);
+    const message = detail || `Request failed (${response.status}).`;
+    recordFrontendLog('frontend.api_request_failed', { ...request, status: response.status, error: message });
+    throw new Error(message);
   }
   return body as T;
 }
+
+const LOGGING_FAILURE_PREFIX = 'Could not save application log';
 
 function recordFrontendLog(eventType: string, details: Record<string, unknown>, source = 'app') {
   void fetch(`${API_BASE}/api/universal-log/client`, {
@@ -221,10 +245,20 @@ function recordFrontendLog(eventType: string, details: Record<string, unknown>, 
     body: JSON.stringify({ event_type: eventType, source, details }),
     keepalive: true,
   }).then((response) => {
-    if (!response.ok) console.error(`Could not save application log (${response.status}).`);
+    if (!response.ok) console.error(`${LOGGING_FAILURE_PREFIX} (${response.status}).`);
   }).catch((cause: unknown) => {
-    console.error('Could not reach the application log endpoint.', cause);
+    console.error(`${LOGGING_FAILURE_PREFIX}: could not reach the endpoint.`, cause);
   });
+}
+
+function formatConsoleArgument(value: unknown): string {
+  if (value instanceof Error) return value.stack ?? value.message;
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function displayValue(value: unknown): string {
@@ -350,6 +384,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    recordFrontendLog('frontend.application.started', { path: window.location.pathname });
     const describeTarget = (target: EventTarget | null) => {
       if (!(target instanceof HTMLElement)) return {};
       return {
@@ -387,16 +422,40 @@ export default function App() {
         reason: event.reason instanceof Error ? event.reason.message : String(event.reason),
       }, 'browser');
     };
+    const onPageHide = () => {
+      recordFrontendLog('frontend.application.stopped', { path: window.location.pathname });
+    };
+    const originalConsoleError = console.error;
+    const originalConsoleWarn = console.warn;
+    console.error = (...args: unknown[]) => {
+      originalConsoleError.apply(console, args);
+      if (String(args[0]).startsWith(LOGGING_FAILURE_PREFIX)) return;
+      recordFrontendLog('frontend.console', {
+        level: 'ERROR',
+        message: args.map(formatConsoleArgument).join(' ').slice(0, 4000),
+      }, 'browser');
+    };
+    console.warn = (...args: unknown[]) => {
+      originalConsoleWarn.apply(console, args);
+      recordFrontendLog('frontend.console', {
+        level: 'WARNING',
+        message: args.map(formatConsoleArgument).join(' ').slice(0, 4000),
+      }, 'browser');
+    };
 
     document.addEventListener('click', onClick, true);
     document.addEventListener('change', onChange, true);
     window.addEventListener('error', onError);
     window.addEventListener('unhandledrejection', onUnhandledRejection);
+    window.addEventListener('pagehide', onPageHide);
     return () => {
       document.removeEventListener('click', onClick, true);
       document.removeEventListener('change', onChange, true);
       window.removeEventListener('error', onError);
       window.removeEventListener('unhandledrejection', onUnhandledRejection);
+      window.removeEventListener('pagehide', onPageHide);
+      console.error = originalConsoleError;
+      console.warn = originalConsoleWarn;
     };
   }, []);
 

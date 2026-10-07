@@ -13,7 +13,7 @@ from typing import Any, Dict
 from backend.app.config import DATA_DIR
 
 _SENSITIVE_KEY = re.compile(r"(api.?key|authorization|secret|password|token|credential|cookie)", re.IGNORECASE)
-_SENSITIVE_TEXT = re.compile(r"(?i)gsk_[a-z0-9_-]+|bearer\s+[^\s\"']+")
+_SENSITIVE_TEXT = re.compile(r"(?i)gsk_[a-z0-9_-]+|sk-[a-z0-9_-]{20,}|bearer\s+[^\s\"']+")
 
 
 def _sanitize(value: Any, key: str = "") -> Any:
@@ -131,7 +131,7 @@ class UniversalLogHandler(logging.Handler):
 
 
 def install_application_log_capture() -> None:
-    logger_names = ("backend.app", "uvicorn.error", "uvicorn.access")
+    logger_names = ("", "uvicorn.error", "uvicorn.access")
     for name in logger_names:
         logger = logging.getLogger(name)
         if not any(isinstance(handler, UniversalLogHandler) for handler in logger.handlers):
@@ -139,5 +139,6 @@ def install_application_log_capture() -> None:
             handler.setLevel(logging.INFO)
             handler.setFormatter(logging.Formatter("%(message)s"))
             logger.addHandler(handler)
-        if name == "backend.app":
+        if not name:
             logger.setLevel(min(logger.level or logging.WARNING, logging.INFO))
+    logging.captureWarnings(True)
