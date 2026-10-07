@@ -1262,7 +1262,9 @@ export default function App() {
             <h2>AI Reasoning</h2>
             <div className="ai-question">
               <input
+                aria-label="Ask AI reasoning"
                 value={aiQuestion}
+                placeholder="Ask about decisions, events, or application logs…"
                 onChange={(event) => {
                   setAiQuestion(event.target.value);
                   setAiError('');
@@ -1271,10 +1273,10 @@ export default function App() {
                 }}
                 onKeyDown={(event) => { if (event.key === 'Enter') void askAi(); }}
               />
-              <button onClick={askAi} disabled={busy || !aiQuestion.trim()}>ASK</button>
+              <button onClick={askAi} disabled={busy || !aiQuestion.trim()}>{busy ? 'THINKING…' : 'ASK'}</button>
             </div>
             {aiError && <p className="workbench-error" role="alert">{aiError}</p>}
-            <p className="ai-answer">{aiAnswer || 'Ask any question—experiment context is included when available.'}</p>
+            <p className="ai-answer">{aiAnswer || 'Ask about decisions, experiments, or application history and logs.'}</p>
             {aiSource && <small className="ai-source">Answered by {aiSource}</small>}
           </section>
           <section className="panel audit-panel" id="audit">

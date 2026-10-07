@@ -72,6 +72,9 @@ async def capture_universal_api_events(request, call_next):
         response_body = bytearray()
         async for chunk in response.body_iterator:
             response_body.extend(chunk)
+        logged_response = _decode_payload(bytes(response_body))
+        if request.url.path == "/api/ai/chat" and isinstance(logged_response, dict):
+            logged_response.pop("evidence", None)
         universal_log.record(
             "api.request.completed",
             "backend",
@@ -82,7 +85,7 @@ async def capture_universal_api_events(request, call_next):
                 "status_code": response.status_code,
                 "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
                 "request": _decode_payload(request_body),
-                "response": _decode_payload(bytes(response_body)),
+                "response": logged_response,
             },
         )
         return Response(
@@ -722,7 +725,7 @@ def ai_chat(payload: AIChatRequest) -> Dict[str, Any]:
             event = store.get_event(payload.event_id)
             if event:
                 evidence["event"] = event
-    evidence["recent_universal_log"] = universal_log.recent_for_ai()
+    evidence["universal_log_context"] = universal_log.context_for_ai(payload.question)
     try:
         response = llm.explain(payload.question, evidence)
     except RuntimeError as error:

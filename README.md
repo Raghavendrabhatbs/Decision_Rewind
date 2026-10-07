@@ -89,7 +89,7 @@ The decision models are trained from the clean dataset and intentionally keep fi
 
 Model metadata and outputs are stored in SQLite and versioned joblib artifacts under `backend/app/ml/trained/versions`; training datasets are persisted under `data/training/`. The API exposes `/api/models/status`, `/api/models/train`, and `/api/models/training/{job_id}` for model status, explicit training/retraining, and live epoch progress.
 
-The provenance panel loads the active experiment's persisted feature → decision → output graph when the dataset opens; correction previews temporarily narrow the graph to the proposed feature paths. The AI chat accepts general questions with or without a selected experiment and uses the Groq Cloud chat-completions API (`https://api.groq.com/openai/v1/chat/completions`); the default model is `openai/gpt-oss-120b`. Configure `GROQ_API_KEY` in the project `.env` file; `LLM_MODEL`, `TEMPERATURE`, and `MAX_TOKENS` control generation. The `/api/ai/status` endpoint reports provider/model configuration without disclosing the key. If the network gateway blocks Groq requests, the API returns an explicit error rather than a fabricated answer.
+The provenance panel loads the active experiment's persisted feature → decision → output graph when the dataset opens; correction previews temporarily narrow the graph to the proposed feature paths. The AI chat accepts general questions with or without a selected experiment, searches the complete universal-log history for question-relevant events, and receives whole-history event/source counts plus recent events. Relevant log details are bounded to fit the model context; the AI reports when details were omitted. It uses the OpenAI SDK Responses API with Groq's OpenAI-compatible endpoint. Copy `.env.example` to `.env`, then set `GROQ_API_KEY` to your Groq API key. `LLM_BASE_URL` defaults to `https://api.groq.com/openai/v1`; `LLM_MODEL` defaults to `openai/gpt-oss-20b`. `TEMPERATURE` and `MAX_TOKENS` control generation. The `/api/ai/status` endpoint reports provider/model configuration without disclosing the key. API errors are surfaced explicitly rather than replaced with fabricated answers.
 
 ## Running the application
 
@@ -130,12 +130,14 @@ The backend exposes endpoints including:
 
 ## LLM configuration
 
-Set the environment variables in .env:
+Copy `.env.example` to `.env` and set the environment variables:
 
-- LLM_PROVIDER=openai
-- LLM_API_KEY=your-key
+- LLM_PROVIDER=groq
+- LLM_BASE_URL=https://api.groq.com/openai/v1
+- GROQ_API_KEY=your-groq-api-key
+- LLM_MODEL=openai/gpt-oss-20b
 
-If no API key is configured, the UI falls back to a deterministic template explanation engine. This ensures the system still works without external dependencies.
+Do not commit `.env` or share the API key. If no API key is configured, AI chat reports that it is unavailable; other application functionality remains available.
 
 ## Experiment methodology
 
