@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.config import APP_NAME
@@ -26,8 +28,16 @@ from backend.app.recovery.recovery import select_recovery_queue
 from backend.app.schemas.models import AIChatRequest, Correction, ExplainRequest
 from backend.app.services.store import store
 from backend.app.services.dataset_store import EDITABLE_FEATURES, dataset_store
+from backend.app.services.universal_log import (
+    _decode_payload,
+    install_application_log_capture,
+    universal_log,
+)
 from backend.app.verification.verifier import deterministic_verifier
 from backend.app.provenance.graph import FEATURE_TO_DECISIONS
+
+install_application_log_capture()
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -43,7 +53,77 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def capture_universal_api_events(request, call_next):
+    if not request.url.path.startswith("/api/") or request.url.path == "/api/universal-log/client":
+        return await call_next(request)
+
+    started_at = time.perf_counter()
+    request_body = await request.body()
+    response = None
+    try:
+        response = await call_next(request)
+        response_body = bytearray()
+        async for chunk in response.body_iterator:
+            response_body.extend(chunk)
+        universal_log.record(
+            "api.request.completed",
+            "backend",
+            {
+                "method": request.method,
+                "path": request.url.path,
+                "query": dict(request.query_params),
+                "status_code": response.status_code,
+                "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                "request": _decode_payload(request_body),
+                "response": _decode_payload(bytes(response_body)),
+            },
+        )
+        return Response(
+            content=bytes(response_body),
+            status_code=response.status_code,
+            headers={
+                key: value
+                for key, value in response.headers.items()
+                if key.lower() != "content-length"
+            },
+            media_type=response.media_type,
+            background=response.background,
+        )
+    except Exception as error:
+        universal_log.record(
+            "api.request.failed",
+            "backend",
+            {
+                "method": request.method,
+                "path": request.url.path,
+                "query": dict(request.query_params),
+                "status_code": response.status_code if response is not None else 500,
+                "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                "request": _decode_payload(request_body),
+                "error": str(error),
+            },
+        )
+        raise
+
+
 llm = LLMProvider()
+
+
+@app.post("/api/universal-log/client", status_code=204)
+def receive_frontend_log(payload: Dict[str, Any]) -> Response:
+    event_type = payload.get("event_type")
+    source = payload.get("source", "app")
+    details = payload.get("details", {})
+    if not isinstance(event_type, str) or not event_type.startswith("frontend."):
+        raise HTTPException(status_code=422, detail="event_type must start with 'frontend.'.")
+    if not isinstance(source, str) or not isinstance(details, dict):
+        raise HTTPException(status_code=422, detail="source must be text and details must be an object.")
+    if len(json.dumps(payload, default=str).encode("utf-8")) > 16_384:
+        raise HTTPException(status_code=413, detail="Application log event exceeds the 16 KB limit.")
+    universal_log.record(event_type, f"frontend.{source[:100]}", details)
+    return Response(status_code=204)
 
 
 def _model_versions() -> Dict[str, str]:
@@ -61,7 +141,18 @@ def create_new_dataset(model: Dict[str, Any]) -> Dict[str, Any]:
     dataset_id = f"DS-{created.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3).upper()}"
     events = generate_dataset(size=200, seed=seed, include_demo_event=False, include_labels=False)
     try:
-        return dataset_store.create_dataset(dataset_id, seed, events, model)
+        dataset = dataset_store.create_dataset(dataset_id, seed, events, model)
+        universal_log.record(
+            "dataset.created",
+            "dataset",
+            {"dataset_id": dataset_id, "seed": seed, "record_count": len(events)},
+        )
+        universal_log.record_many(
+            "security.event.generated",
+            "dataset",
+            [{"dataset_id": dataset_id, **event} for event in events],
+        )
+        return dataset
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -110,6 +201,11 @@ def train_dataset(dataset_id: str) -> Dict[str, Any]:
             event["event_id"]: predict_workbench_decisions(event, trained_model)
             for event in events
         }
+        universal_log.record(
+            "model.predictions.generated",
+            "workbench_model",
+            {"dataset_id": dataset_id, "model_id": dataset["model_id"], "predictions": predictions},
+        )
         labeled_dataset = dataset_store.complete_experiment_training(dataset_id, predictions)
     except FileNotFoundError as error:
         raise HTTPException(status_code=409, detail="The model pinned to this experiment is unavailable.") from error
@@ -122,16 +218,38 @@ def _run_training_job(job_id: str, training_dataset_id: str, seed: int, model_ve
     try:
         events = generate_dataset(size=TRAINING_RECORD_COUNT, seed=seed, include_demo_event=False)
         save_training_dataset(training_dataset_id, events)
+        universal_log.record_many(
+            "security.event.training_input",
+            "workbench_model",
+            [{"training_dataset_id": training_dataset_id, **event} for event in events],
+        )
         metrics: Dict[str, Any] = {}
 
         def record_epoch(decision_id: str, epoch: int, stats: Dict[str, float]) -> None:
             metrics[decision_id] = {"epoch": epoch, **stats}
             dataset_store.update_training_job(job_id, decision_id, epoch, metrics)
+            universal_log.record(
+                "model.training.epoch",
+                "workbench_model",
+                {
+                    "job_id": job_id,
+                    "model_version": model_version,
+                    "decision_id": decision_id,
+                    "epoch": epoch,
+                    "metrics": stats,
+                },
+            )
 
         model = train_model_version(training_dataset_id, seed, events, model_version, record_epoch)
         dataset_store.complete_training_job(job_id, model)
+        universal_log.record("model.training.completed", "workbench_model", model)
     except Exception as error:
         dataset_store.fail_training_job(job_id, str(error))
+        universal_log.record(
+            "model.training.failed",
+            "workbench_model",
+            {"job_id": job_id, "model_version": model_version, "error": str(error)},
+        )
         raise
 
 
@@ -440,7 +558,7 @@ def get_dataset_graph(dataset_id: str, feature: str | None = None) -> Dict[str, 
 def get_dataset_audit(dataset_id: str) -> List[Dict[str, Any]]:
     if not dataset_store.get_dataset(dataset_id):
         raise HTTPException(status_code=404, detail="Dataset not found.")
-    return dataset_store.list_audit(dataset_id)
+    return dataset_store.list_audit(dataset_id, limit=None)
 
 
 @app.get("/api/events")
@@ -468,6 +586,7 @@ def generate_events(payload: Dict[str, Any]) -> Dict[str, Any]:
     events = generate_dataset(size=size, seed=seed)
     for event in events:
         store.save_event(event)
+    universal_log.record_many("security.event.generated", "events_api", events)
     return {"count": len(events), "seed": seed}
 
 
@@ -574,8 +693,15 @@ def ai_explain(payload: ExplainRequest) -> Dict[str, Any]:
         "decision_id": payload.analysis.get("decisions", [{}])[0].get("decision_id", "D4"),
         "historical_value": payload.analysis.get("decisions", [{}])[0].get("historical_value", "MONITOR"),
         "counterfactual_value": payload.analysis.get("decisions", [{}])[0].get("counterfactual_value", "ESCALATE"),
+        "recent_universal_log": universal_log.recent_for_ai(),
     }
-    return llm.explain("Why was D4 rewound?", evidence)
+    response = llm.explain("Why was D4 rewound?", evidence)
+    universal_log.record(
+        "llm.model_output",
+        "ai_explain",
+        {"model": response["source"], "question": "Why was D4 rewound?", "answer": response["answer"]},
+    )
+    return response
 
 
 @app.post("/api/ai/chat")
@@ -589,10 +715,16 @@ def ai_chat(payload: AIChatRequest) -> Dict[str, Any]:
             event = store.get_event(payload.event_id)
             if event:
                 evidence["event"] = event
+    evidence["recent_universal_log"] = universal_log.recent_for_ai()
     try:
         response = llm.explain(payload.question, evidence)
     except RuntimeError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
+    universal_log.record(
+        "llm.model_output",
+        "ai_chat",
+        {"model": response["source"], "question": payload.question, "answer": response["answer"]},
+    )
     return {"answer": response["answer"], "evidence": response["evidence"], "source": response["source"]}
 
 
@@ -611,6 +743,7 @@ def run_experiment(payload: Dict[str, Any]) -> Dict[str, Any]:
     fault_type = payload.get("fault_type", "categorical")
     seed = int(payload.get("seed", 42))
     events = generate_dataset(size=size, seed=seed)
+    universal_log.record_many("security.event.generated", "experiment", events)
     stats = {
         "size": len(events),
         "fault_type": fault_type,

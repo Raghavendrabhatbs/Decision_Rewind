@@ -77,9 +77,11 @@ def test_explicit_training_gates_experiments_and_versions_are_reused(tmp_path, m
     from fastapi.testclient import TestClient
 
     from backend.app import main
+    from backend.app.services.universal_log import UniversalLog
 
     training_store = DatasetStore(tmp_path / "api-workbench.db")
     monkeypatch.setattr(main, "dataset_store", training_store)
+    monkeypatch.setattr(main, "universal_log", UniversalLog(tmp_path / "universal_log.jsonl"))
     monkeypatch.setattr(main, "TRAINING_RECORD_COUNT", 200)
     monkeypatch.setattr(main, "TRAINING_EPOCHS", 2)
     monkeypatch.setattr(workbench_model, "TRAINING_RECORD_COUNT", 200)
@@ -265,3 +267,19 @@ def test_graph_includes_d2_downstream_decisions_without_duplicate_edges(tmp_path
     assert nodes["failed_logins"] == "feature"
     assert nodes["D2-output"] == "output"
     assert ("failed_logins", "D2-output") not in edges
+
+
+def test_audit_can_return_complete_history_for_download(tmp_path, monkeypatch):
+    dataset_store, events, _ = _trained_store(tmp_path, monkeypatch)
+    for index in range(105):
+        dataset_store.log_workflow_transition(
+            "DS-TEST",
+            events[0]["event_id"],
+            "AUDIT_EXPORT_TEST",
+            {"sequence": index},
+        )
+
+    assert len(dataset_store.list_audit("DS-TEST")) == 100
+    complete_history = dataset_store.list_audit("DS-TEST", limit=None)
+    assert len(complete_history) == 107
+    assert complete_history[0]["details"] == {"sequence": 104}

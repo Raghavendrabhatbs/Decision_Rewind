@@ -54,11 +54,13 @@ def test_groq_provider_explains_cloudflare_access_denial_without_exposing_key():
     assert "private-key" not in str(error.value)
 
 
-def test_chat_endpoint_accepts_general_questions_without_an_active_experiment():
+def test_chat_endpoint_accepts_general_questions_without_an_active_experiment(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     from backend.app import main
+    from backend.app.services.universal_log import UniversalLog
 
+    monkeypatch.setattr(main, "universal_log", UniversalLog(tmp_path / "universal_log.jsonl"))
     with patch.object(
         main.llm,
         "explain",
@@ -72,11 +74,13 @@ def test_chat_endpoint_accepts_general_questions_without_an_active_experiment():
     assert response.json()["source"] == "groq:test-model"
 
 
-def test_ai_status_does_not_expose_api_key():
+def test_ai_status_does_not_expose_api_key(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     from backend.app import main
+    from backend.app.services.universal_log import UniversalLog
 
+    monkeypatch.setattr(main, "universal_log", UniversalLog(tmp_path / "universal_log.jsonl"))
     with patch.object(main, "llm", LLMProvider(provider="groq", api_key="private-key", model="llama-test")):
         with TestClient(main.app) as client:
             response = client.get("/api/ai/status")

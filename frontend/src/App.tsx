@@ -137,6 +137,40 @@ type AuditRecord = {
   timestamp: string;
 };
 
+function auditLabel(value: string): string {
+  return value
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function AuditValue({ value }: { value: unknown }) {
+  if (value === null || value === undefined) return <span>—</span>;
+  if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') {
+    return <span>{String(value)}</span>;
+  }
+  if (Array.isArray(value)) {
+    return value.length
+      ? <ul className="audit-value-list">{value.map((item, index) => <li key={index}><AuditValue value={item} /></li>)}</ul>
+      : <span>None</span>;
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value);
+    return entries.length
+      ? (
+        <dl className="audit-detail-fields">
+          {entries.map(([key, item]) => (
+            <div key={key}>
+              <dt>{auditLabel(key)}</dt>
+              <dd><AuditValue value={item} /></dd>
+            </div>
+          ))}
+        </dl>
+      )
+      : <span>None</span>;
+  }
+  return <span>{String(value)}</span>;
+}
+
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 const PAGE_SIZE = 20;
 const DECISIONS = [
@@ -178,6 +212,19 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(detail || `Request failed (${response.status}).`);
   }
   return body as T;
+}
+
+function recordFrontendLog(eventType: string, details: Record<string, unknown>, source = 'app') {
+  void fetch(`${API_BASE}/api/universal-log/client`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ event_type: eventType, source, details }),
+    keepalive: true,
+  }).then((response) => {
+    if (!response.ok) console.error(`Could not save application log (${response.status}).`);
+  }).catch((cause: unknown) => {
+    console.error('Could not reach the application log endpoint.', cause);
+  });
 }
 
 function displayValue(value: unknown): string {
@@ -301,6 +348,65 @@ export default function App() {
   useEffect(() => {
     void loadActiveDataset();
   }, []);
+
+  useEffect(() => {
+    const describeTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return {};
+      return {
+        tag: target.tagName.toLowerCase(),
+        id: target.id || undefined,
+        name: target.getAttribute('name') || undefined,
+        label: target.getAttribute('aria-label') || target.getAttribute('title') || undefined,
+        text: target instanceof HTMLButtonElement || target instanceof HTMLAnchorElement
+          ? target.innerText.trim().slice(0, 100)
+          : undefined,
+      };
+    };
+    const onClick = (event: MouseEvent) => {
+      recordFrontendLog('frontend.ui.click', {
+        target: describeTarget(event.target),
+        path: window.location.pathname,
+      });
+    };
+    const onChange = (event: Event) => {
+      recordFrontendLog('frontend.ui.change', {
+        target: describeTarget(event.target),
+        path: window.location.pathname,
+      });
+    };
+    const onError = (event: ErrorEvent) => {
+      recordFrontendLog('frontend.application_error', {
+        message: event.message,
+        filename: event.filename,
+        line: event.lineno,
+        column: event.colno,
+      }, 'browser');
+    };
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      recordFrontendLog('frontend.unhandled_rejection', {
+        reason: event.reason instanceof Error ? event.reason.message : String(event.reason),
+      }, 'browser');
+    };
+
+    document.addEventListener('click', onClick, true);
+    document.addEventListener('change', onChange, true);
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+    return () => {
+      document.removeEventListener('click', onClick, true);
+      document.removeEventListener('change', onChange, true);
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (error) recordFrontendLog('frontend.application_error', { area: 'workbench', message: error });
+  }, [error]);
+
+  useEffect(() => {
+    if (aiError) recordFrontendLog('frontend.application_error', { area: 'ai_reasoning', message: aiError });
+  }, [aiError]);
 
   useEffect(() => {
     if (!training || busy || latestTraining?.status !== 'RUNNING') return;
@@ -682,6 +788,25 @@ export default function App() {
     }
   };
 
+  const downloadAudit = () => {
+    if (!dataset || !audit.length) return;
+    const exportData = {
+      dataset_id: dataset.dataset_id,
+      exported_at: new Date().toISOString(),
+      record_count: audit.length,
+      records: audit,
+    };
+    const file = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(file);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${dataset.dataset_id}-audit.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   const toggleColumn = (column: string, visible: string[], setVisible: (value: string[]) => void) => {
     setVisible(visible.includes(column) ? visible.filter((item) => item !== column) : [...visible, column]);
   };
@@ -693,12 +818,26 @@ export default function App() {
           <div className="eyebrow">CYBERSECURITY RESEARCH</div>
           <h1>DECISION-REWIND</h1>
         </div>
-        <nav aria-label="Main navigation">
-          <a href="#workbench">Dataset Workbench</a>
-          <a href="#selected-event">Selected Event</a>
-          <a href="#provenance">Provenance</a>
-          <a href="#audit">Audit</a>
-        </nav>
+        <div className="topbar-actions">
+          <nav aria-label="Main navigation">
+            <a href="#workbench">Dataset Workbench</a>
+            <a href="#selected-event">Selected Event</a>
+            <a href="#provenance">Provenance</a>
+            <a href="#audit">Audit</a>
+          </nav>
+          <button
+            className="secondary retrain-icon-button"
+            onClick={trainModel}
+            disabled={busy || training || latestTraining?.status === 'RUNNING'}
+            aria-label={training || latestTraining?.status === 'RUNNING' ? 'Training global model' : modelStatus?.active_model ? 'Retrain global model' : 'Train global model'}
+            title={training || latestTraining?.status === 'RUNNING' ? 'Training global model' : modelStatus?.active_model ? 'Retrain global model' : 'Train global model'}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M20 7v5h-5M4 17v-5h5" />
+              <path d="M5.6 9A7 7 0 0 1 18 6.5L20 12M4 12l2 5.5A7 7 0 0 0 18.4 15" />
+            </svg>
+          </button>
+        </div>
       </header>
 
       <main className="workbench-main">
@@ -729,9 +868,6 @@ export default function App() {
                 {labeling ? 'LABELING…' : 'TRAIN EXPERIMENT'}
               </button>
             )}
-            <button className="secondary" onClick={trainModel} disabled={busy || training || latestTraining?.status === 'RUNNING'}>
-              {training || latestTraining?.status === 'RUNNING' ? 'TRAINING…' : modelStatus?.active_model ? 'RETRAIN GLOBAL MODEL' : 'TRAIN GLOBAL MODEL'}
-            </button>
           </div>
         </section>
 
@@ -987,17 +1123,27 @@ export default function App() {
             {aiSource && <small className="ai-source">Answered by {aiSource}</small>}
           </section>
           <section className="panel audit-panel" id="audit">
-            <div className="eyebrow">PERSISTED DATASET HISTORY</div>
-            <h2>Audit Trail</h2>
+            <div className="audit-heading">
+              <div>
+                <div className="eyebrow">PERSISTED DATASET HISTORY</div>
+                <h2>Audit Trail</h2>
+              </div>
+              <button className="secondary audit-download" onClick={downloadAudit} disabled={!dataset || !audit.length}>
+                DOWNLOAD JSON
+              </button>
+            </div>
             <div className="timeline">
               {audit.length ? audit.slice(0, 12).map((entry) => (
                 <div className="timeline-item" key={entry.audit_id}>
-                  <span>{formatDate(entry.timestamp)}</span>
-                  <strong>{entry.event_id || dataset?.dataset_id}</strong>
-                  <small>{entry.operation}</small>
-                  <small>{JSON.stringify(entry.details)}</small>
+                  <div className="audit-record-header">
+                    <strong>{auditLabel(entry.operation)}</strong>
+                    <time dateTime={entry.timestamp}>{formatDate(entry.timestamp)}</time>
+                  </div>
+                  <span className="audit-event-id">{entry.event_id || dataset?.dataset_id}</span>
+                  <div className="audit-record-details"><AuditValue value={entry.details} /></div>
                 </div>
               )) : <p>No audit records for this dataset.</p>}
+              {audit.length > 12 && <p className="audit-count">Showing 12 most recent of {audit.length} records. Download JSON for the full audit trail.</p>}
             </div>
           </section>
         </div>

@@ -39,11 +39,38 @@ button.secondary {
 }
 
 .topbar {
+  position: relative;
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 1rem 0 1.2rem;
   border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.retrain-icon-button {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  padding: 0;
+  border-radius: 8px;
+}
+
+.retrain-icon-button svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
 }
 
 .eyebrow {
@@ -288,6 +315,89 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
+}
+
+.audit-heading,
+.audit-record-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.audit-heading {
+  margin-bottom: 1rem;
+}
+
+.audit-heading h2 {
+  margin: 0.3rem 0 0;
+}
+
+.audit-download {
+  flex-shrink: 0;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.72rem;
+}
+
+.audit-record-header time,
+.audit-event-id,
+.audit-count {
+  color: #94a3b8;
+  font-size: 0.76rem;
+}
+
+.audit-event-id {
+  overflow-wrap: anywhere;
+}
+
+.audit-record-details {
+  margin-top: 0.45rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  padding-top: 0.45rem;
+}
+
+.audit-detail-fields {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.audit-detail-fields > div {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.32fr) minmax(0, 1fr);
+  gap: 0.5rem;
+  align-items: start;
+}
+
+.audit-detail-fields dt {
+  color: #7dd3fc;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.audit-detail-fields dd {
+  min-width: 0;
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.audit-detail-fields .audit-detail-fields {
+  margin-top: 0.35rem;
+  padding-left: 0.65rem;
+  border-left: 1px solid rgba(56, 189, 248, 0.28);
+}
+
+.audit-value-list {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.audit-count {
+  margin: 0.25rem 0 0;
 }
 
 .chart-box {
@@ -770,6 +880,21 @@ button:disabled {
   .panel-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .topbar {
+    padding-right: 48px;
+  }
+
+  .topbar-actions {
+    width: 100%;
+    align-items: flex-start;
+  }
+
+  .retrain-icon-button {
+    position: absolute;
+    top: 1rem;
+    right: 0;
   }
 
   .topbar nav {

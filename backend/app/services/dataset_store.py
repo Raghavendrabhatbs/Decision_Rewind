@@ -807,12 +807,14 @@ class DatasetStore:
             conn.execute("UPDATE datasets SET workflow_status = 'VERIFIED' WHERE dataset_id = ?", (correction["dataset_id"],))
         return {"rewind_operations": rewind_results, "current_state": event, "verification": verification}
 
-    def list_audit(self, dataset_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def list_audit(self, dataset_id: str, limit: int | None = 100) -> List[Dict[str, Any]]:
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM dataset_audit_logs WHERE dataset_id = ? ORDER BY timestamp DESC LIMIT ?",
-                (dataset_id, limit),
-            ).fetchall()
+            query = "SELECT * FROM dataset_audit_logs WHERE dataset_id = ? ORDER BY timestamp DESC"
+            parameters: tuple[Any, ...] = (dataset_id,)
+            if limit is not None:
+                query += " LIMIT ?"
+                parameters += (limit,)
+            rows = conn.execute(query, parameters).fetchall()
         return [
             {**dict(row), "details": json.loads(row["details"])}
             for row in rows
