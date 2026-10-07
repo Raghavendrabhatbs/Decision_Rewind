@@ -240,6 +240,66 @@ def test_multifeature_correction_preserves_history_and_rewinds_only_changed_deci
         assert row["current_output"] == expected
 
 
+def test_rewind_includes_downstream_decisions_when_d2_changes(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from backend.app import main
+    from backend.app.services.universal_log import UniversalLog
+
+    dataset_store, events, dataset = _trained_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, "dataset_store", dataset_store)
+    monkeypatch.setattr(main, "universal_log", UniversalLog(tmp_path / "universal_log.jsonl"))
+    event = dataset_store.get_event("DS-TEST", events[0]["event_id"])
+    current_outputs = {row["decision_id"]: row["current_output"] for row in event["decisions"]}
+
+    def counterfactual_for_changes(_dataset, current, changes):
+        outputs = dict(current["decision_outputs"])
+        outputs["D2"] = "CRITICAL" if current_outputs["D2"] != "CRITICAL" else "LOW"
+        outputs["D4"] = "ESCALATE" if current_outputs["D4"] != "ESCALATE" else "MONITOR"
+        outputs["D5"] = "ISOLATE" if current_outputs["D5"] != "ISOLATE" else "ALLOW"
+        corrected = dict(current)
+        for change in changes:
+            corrected[change["feature"]] = change["new_value"]
+        return outputs, corrected, [change["feature"] for change in changes]
+
+    monkeypatch.setattr(main, "_counterfactual_for_changes", counterfactual_for_changes)
+    proposed_value = (event["current_state"]["failed_logins"] + 1) % 21
+
+    with TestClient(main.app) as client:
+        preview_response = client.post(
+            "/api/datasets/DS-TEST/preview",
+            json={
+                "event_id": event["current_state"]["event_id"],
+                "changes": [{"feature": "failed_logins", "new_value": proposed_value}],
+            },
+        )
+        assert preview_response.status_code == 200
+        preview = preview_response.json()
+        assert {item["decision_id"] for item in preview["affected_decisions"]} == {"D2", "D4", "D5"}
+        assert ["failed_logins", "D2", "D4"] in preview["decision_impacts"][3]["dependency_paths"]
+
+        correction_response = client.post(
+            "/api/datasets/DS-TEST/corrections",
+            json={
+                "event_id": event["current_state"]["event_id"],
+                "changes": [{"feature": "failed_logins", "new_value": proposed_value}],
+            },
+        )
+        assert correction_response.status_code == 200
+        correction_id = correction_response.json()["correction_id"]
+
+        rewind_response = client.post(
+            "/api/datasets/DS-TEST/rewind",
+            json={"correction_id": correction_id},
+        )
+
+    assert rewind_response.status_code == 200, rewind_response.text
+    rewind = rewind_response.json()
+    assert rewind["verification"]["verification"] == "VERIFIED"
+    assert {item["decision_id"] for item in rewind["rewind_operations"]} == {"D2", "D4", "D5"}
+    assert dataset_store.get_correction(correction_id)["status"] == "REWOUND"
+
+
 def test_correction_proposal_does_not_mutate_event_state(tmp_path, monkeypatch):
     dataset_store, events, _ = _trained_store(tmp_path, monkeypatch)
     event = events[0]

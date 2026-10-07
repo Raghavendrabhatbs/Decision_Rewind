@@ -117,6 +117,8 @@ type PreviewDecision = {
   dependency_paths: string[][];
 };
 
+type ProvenanceGraphNode = { id: string; kind: 'feature' | 'decision' | 'output' };
+
 type PreviewResult = {
   event_id: string;
   changed_features: string[];
@@ -126,7 +128,7 @@ type PreviewResult = {
   decision_impacts: PreviewDecision[];
   historical_outputs: Record<string, string>;
   counterfactual_outputs: Record<string, string>;
-  graph: { nodes: Array<{ id: string; kind: string }>; edges: Array<{ source: string; target: string }> };
+  graph: { nodes: ProvenanceGraphNode[]; edges: Array<{ source: string; target: string }> };
 };
 
 type AuditRecord = {
@@ -550,42 +552,114 @@ export default function App() {
   const graphNodes = useMemo(() => {
     const featureNodes = graph.nodes
       .filter((node) => node.kind === 'feature')
-      .sort((left, right) => EDITABLE_FEATURES.indexOf(left.id as keyof EventRecord) - EDITABLE_FEATURES.indexOf(right.id as keyof EventRecord));
+      .sort((left, right) => FEATURE_COLUMNS.findIndex((column) => column.key === left.id) - FEATURE_COLUMNS.findIndex((column) => column.key === right.id));
     const decisionNodes = graph.nodes
       .filter((node) => node.kind === 'decision')
       .sort((left, right) => DECISIONS.findIndex((decision) => decision.id === left.id) - DECISIONS.findIndex((decision) => decision.id === right.id));
     const outputNodes = graph.nodes
       .filter((node) => node.kind === 'output')
       .sort((left, right) => DECISIONS.findIndex((decision) => decision.id === left.id.replace('-output', '')) - DECISIONS.findIndex((decision) => decision.id === right.id.replace('-output', '')));
+    const layers = [
+      { nodes: featureNodes, x: 10 },
+      { nodes: decisionNodes, x: 255 },
+      { nodes: outputNodes, x: 500 },
+    ];
+    const maxLayerSize = Math.max(...layers.map((layer) => layer.nodes.length), 1);
+    const rowHeight = 92;
+    const layerHeight = maxLayerSize * rowHeight;
     const positions = new Map<string, { x: number; y: number }>();
-    featureNodes.forEach((node, index) => positions.set(node.id, { x: 0, y: index * 60 }));
-    decisionNodes.forEach((node, index) => positions.set(node.id, { x: 120, y: index * 60 }));
-    outputNodes.forEach((node, index) => positions.set(node.id, { x: 240, y: index * 60 }));
-    return graph.nodes.map((node) => ({
-      id: node.id,
-      data: { label: node.id },
-      position: positions.get(node.id) ?? { x: 0, y: 0 },
-      sourcePosition: Position.Right,
-      targetPosition: Position.Left,
-      style: {
-        background: node.kind === 'decision' ? '#0f172a' : node.kind === 'output' ? '#164e63' : '#1e293b',
-        color: '#e2e8f0',
-        border: '1px solid #38bdf8',
-        borderRadius: 10,
-        padding: 8,
-        width: 110,
-        fontSize: 10,
-        overflowWrap: 'anywhere' as const,
-      },
-    }));
-  }, [graph]);
-  const graphEdges = useMemo(() => graph.edges.map((edge) => ({
+    for (const layer of layers) {
+      const offset = (layerHeight - layer.nodes.length * rowHeight) / 2;
+      layer.nodes.forEach((node, index) => positions.set(node.id, { x: layer.x, y: offset + index * rowHeight }));
+    }
+
+    return graph.nodes.map((node) => {
+      if (node.kind === 'feature') {
+        const column = FEATURE_COLUMNS.find((item) => item.key === node.id);
+        const change = preview?.changes.find((item) => item.feature === node.id);
+        return {
+          id: node.id,
+          type: 'default',
+          className: `provenance-node provenance-feature${change ? ' is-changed' : ''}`,
+          data: {
+            label: (
+              <div className="provenance-node-content">
+                <span className="provenance-node-kicker">{change ? 'CORRECTED FEATURE' : 'INPUT FEATURE'}</span>
+                <strong>{column?.label ?? auditLabel(node.id)}</strong>
+                {change && <span className="provenance-node-value">{displayValue(change.old_value)} <span aria-label="changes to">→</span> {displayValue(change.new_value)}</span>}
+              </div>
+            ),
+          },
+          position: positions.get(node.id) ?? { x: 0, y: 0 },
+          sourcePosition: Position.Right,
+          targetPosition: Position.Left,
+        };
+      }
+
+      if (node.kind === 'decision') {
+        const decision = DECISIONS.find((item) => item.id === node.id);
+        const impact = preview?.decision_impacts.find((item) => item.decision_id === node.id);
+        return {
+          id: node.id,
+          type: 'default',
+          className: `provenance-node provenance-decision${impact?.affected ? ' is-affected' : ''}`,
+          data: {
+            label: (
+              <div className="provenance-node-content">
+                <span className="provenance-node-kicker">{impact?.affected ? 'AFFECTED BY CORRECTION' : 'DECISION MODEL'}</span>
+                <strong>{node.id} · {decision?.label ?? 'Decision'}</strong>
+              </div>
+            ),
+          },
+          position: positions.get(node.id) ?? { x: 255, y: 0 },
+          sourcePosition: Position.Right,
+          targetPosition: Position.Left,
+        };
+      }
+
+      const decisionId = node.id.replace(/-output$/, '');
+      const decision = DECISIONS.find((item) => item.id === decisionId);
+      const impact = preview?.decision_impacts.find((item) => item.decision_id === decisionId);
+      const before = preview?.historical_outputs[decisionId];
+      const after = preview?.counterfactual_outputs[decisionId];
+      return {
+        id: node.id,
+        type: 'default',
+        className: `provenance-node provenance-output${impact?.changed ? ' is-changed' : ''}`,
+        data: {
+          label: (
+            <div className="provenance-node-content">
+              <span className="provenance-node-kicker">REPLAYED OUTPUT · {decisionId}</span>
+              <strong>{decision?.label ?? 'Decision output'}</strong>
+              {before !== undefined && after !== undefined && (
+                <span className="provenance-node-value">{before} <span aria-label="changes to">→</span> {after}</span>
+              )}
+              <span className="provenance-output-status">{impact?.changed ? 'Output changes' : 'Output unchanged'}</span>
+            </div>
+          ),
+        },
+        position: positions.get(node.id) ?? { x: 500, y: 0 },
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
+      };
+    });
+  }, [graph, preview]);
+  const graphEdges = useMemo(() => graph.edges.map((edge) => {
+    const source = graph.nodes.find((node) => node.id === edge.source);
+    const target = graph.nodes.find((node) => node.id === edge.target);
+    const isDecisionDependency = source?.kind === 'decision' && target?.kind === 'decision';
+    return {
     id: `${edge.source}-${edge.target}`,
     source: edge.source,
     target: edge.target,
     markerEnd: { type: MarkerType.ArrowClosed },
-    style: { stroke: '#38bdf8', strokeWidth: 2 },
-  })), [graph]);
+    label: isDecisionDependency ? 'severity input' : undefined,
+    labelStyle: { fill: '#cbd5e1', fontSize: 10, fontWeight: 600 },
+    labelBgStyle: { fill: '#0f172a', fillOpacity: 0.92 },
+    labelBgPadding: [5, 3] as [number, number],
+    style: { stroke: isDecisionDependency ? '#a78bfa' : '#64748b', strokeWidth: isDecisionDependency ? 2.5 : 1.8 },
+  };
+  }), [graph]);
 
   const setProposedFeature = (name: keyof EventRecord, value: unknown) => {
     setProposedFeatures((current) => ({ ...current, [name]: value }));
@@ -1136,9 +1210,29 @@ export default function App() {
         <section className="panel graph-panel" id="provenance">
           <div className="panel-header">
             <div>
-              <div className="eyebrow">FEATURE → DECISION → OUTPUT</div>
-              <h2>Provenance / Impact Graph</h2>
+              <div className="eyebrow">FOLLOW THE CORRECTION</div>
+              <h2>Provenance Graph</h2>
+              <p className="provenance-intro">
+                Read left to right: event features feed decision models, which produce outcomes.
+                Corrected inputs and changed outcomes are highlighted.
+              </p>
             </div>
+          </div>
+          {preview && (
+            <div className="provenance-summary" role="status">
+              <strong>{preview.changed_features.length} corrected feature{preview.changed_features.length === 1 ? '' : 's'}</strong>
+              <span>→</span>
+              <strong>{preview.affected_decisions.length} affected decision{preview.affected_decisions.length === 1 ? '' : 's'}</strong>
+              <span>·</span>
+              <span>Event {preview.event_id}</span>
+            </div>
+          )}
+          <div className="provenance-legend" aria-label="Graph legend">
+            <span><i className="legend-swatch feature-swatch" /> Event feature</span>
+            <span><i className="legend-swatch decision-swatch" /> Decision model</span>
+            <span><i className="legend-swatch output-swatch" /> Decision output</span>
+            <span><i className="legend-swatch changed-swatch" /> Changed by correction</span>
+            <span><i className="legend-line" /> Dependency / data flow</span>
           </div>
           <div className={`graph-box workbench-graph${graphNodes.length ? '' : ' is-empty'}`}>
             {graphNodes.length ? (
@@ -1147,8 +1241,10 @@ export default function App() {
                 nodes={graphNodes}
                 edges={graphEdges}
                 fitView
-                fitViewOptions={{ padding: 0.05, minZoom: 0.55, maxZoom: 1.2 }}
-                onInit={(instance) => instance.fitView({ padding: 0.05, minZoom: 0.55, maxZoom: 1.2 })}
+                fitViewOptions={{ padding: 0.12, minZoom: 0.25, maxZoom: 1 }}
+                onInit={(instance) => window.requestAnimationFrame(() => {
+                  window.requestAnimationFrame(() => instance.fitView({ padding: 0.12, minZoom: 0.25, maxZoom: 1 }));
+                })}
                 nodesDraggable={false}
                 elementsSelectable={false}
                 panOnDrag

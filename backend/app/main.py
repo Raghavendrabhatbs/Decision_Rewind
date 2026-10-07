@@ -516,6 +516,7 @@ def rewind_dataset_decision(dataset_id: str, payload: Dict[str, Any]) -> Dict[st
         raise HTTPException(status_code=422, detail="Proposed values must differ from the current feature values.")
     counterfactual, corrected, changed_features = _counterfactual_for_changes(dataset, current, changed)
     current_decisions = {row["decision_id"]: row for row in event_record["decisions"]}
+    d2_changed = counterfactual["D2"] != current_decisions["D2"]["current_output"]
     decision_impacts = {
         decision_id: _decision_impact(
             decision_id,
@@ -523,6 +524,7 @@ def rewind_dataset_decision(dataset_id: str, payload: Dict[str, Any]) -> Dict[st
             current_decisions[decision_id]["current_output"],
             counterfactual[decision_id],
             changed_features,
+            d2_changed,
         )
         for decision_id in ["D1", "D2", "D3", "D4", "D5"]
     }
