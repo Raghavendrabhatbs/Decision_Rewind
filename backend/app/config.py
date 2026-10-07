@@ -20,7 +20,8 @@ def get_env(key: str, default: str = "") -> str:
 
 APP_NAME = get_env("APP_NAME", "DECISION-REWIND")
 LLM_PROVIDER = get_env("LLM_PROVIDER", "groq")
-LLM_MODEL = get_env("LLM_MODEL", "llama-3.3-70b-versatile")
+LLM_BASE_URL = get_env("LLM_BASE_URL", "https://api.groq.com/openai/v1")
+LLM_MODEL = get_env("LLM_MODEL", "openai/gpt-oss-20b")
 LLM_API_KEY = get_env("GROQ_API_KEY") or get_env("LLM_API_KEY")
 LLM_TEMPERATURE = float(get_env("TEMPERATURE", "0.3"))
 LLM_MAX_TOKENS = int(get_env("MAX_TOKENS", "2048"))

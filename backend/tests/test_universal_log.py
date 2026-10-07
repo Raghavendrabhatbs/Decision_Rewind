@@ -29,6 +29,45 @@ def test_universal_log_appends_json_lines_redacts_secrets_and_reads_recent(tmp_p
     assert "must-not-be-written" not in log.path.read_text(encoding="utf-8")
 
 
+def test_ai_log_context_searches_full_history_and_includes_aggregate_counts(tmp_path):
+    log = UniversalLog(tmp_path / "universal_log.jsonl")
+    for index in range(40):
+        log.record(
+            "application.log" if index == 2 else "test.event",
+            "backend" if index == 2 else "test",
+            {"level": "ERROR", "message": "database unavailable"} if index == 2 else {"sequence": index},
+        )
+
+    context = log.context_for_ai("What database errors happened?")
+
+    assert context["total_events"] == 40
+    assert context["matching_events"] == 1
+    assert context["event_type_counts"] == {"test.event": 39, "application.log": 1}
+    assert context["source_counts"] == {"test": 39, "backend": 1}
+    assert any(
+        event["event_type"] == "application.log"
+        and event["details"]["message"] == "database unavailable"
+        for event in context["events"]
+    )
+
+
+def test_ai_log_context_bounds_details_but_reports_omitted_history(tmp_path):
+    log = UniversalLog(tmp_path / "universal_log.jsonl")
+    for index in range(60):
+        log.record("application.log", "backend", {"message": f"database unavailable {index} " + "x" * 900})
+
+    context = log.context_for_ai("database errors", event_limit=60)
+
+    assert context["total_events"] == 60
+    assert context["matching_events"] == 60
+    assert context["included_events"] < context["total_events"]
+    assert context["omitted_events"] == context["total_events"] - context["included_events"]
+    assert sum(
+        len(json.dumps(event, ensure_ascii=True, separators=(",", ":")))
+        for event in context["events"]
+    ) <= 24_000
+
+
 def test_api_and_llm_events_are_logged_and_recent_history_reaches_ai(tmp_path, monkeypatch):
     from backend.app import main
 
@@ -39,8 +78,9 @@ def test_api_and_llm_events_are_logged_and_recent_history_reaches_ai(tmp_path, m
         assert any(
             record["event_type"] == "api.request.completed"
             and record["details"]["path"] == "/api/health"
-            for record in evidence["recent_universal_log"]
+            for record in evidence["universal_log_context"]["events"]
         )
+        assert evidence["universal_log_context"]["total_events"] > 0
         return {"source": "groq:test-model", "answer": "Answer from context.", "evidence": evidence}
 
     monkeypatch.setattr(main.llm, "explain", explain)
@@ -51,11 +91,36 @@ def test_api_and_llm_events_are_logged_and_recent_history_reaches_ai(tmp_path, m
     assert response.status_code == 200
     records = log.recent(10)
     assert any(record["event_type"] == "llm.model_output" for record in records)
-    assert any(
-        record["event_type"] == "api.request.completed"
+    chat_request_log = next(
+        record for record in records
+        if record["event_type"] == "api.request.completed"
         and record["details"]["path"] == "/api/ai/chat"
-        for record in records
     )
+    assert "evidence" not in chat_request_log["details"]["response"]
+
+
+def test_chat_passes_matching_historical_log_events_for_user_question(tmp_path, monkeypatch):
+    from backend.app import main
+
+    log = UniversalLog(tmp_path / "universal_log.jsonl")
+    log.record("application.log", "backend", {"level": "ERROR", "message": "database unavailable"})
+    for index in range(25):
+        log.record("workflow.event", "test", {"sequence": index})
+    monkeypatch.setattr(main, "universal_log", log)
+
+    def explain(question, evidence):
+        assert question == "What happened to the database?"
+        context = evidence["universal_log_context"]
+        assert context["total_events"] >= 26
+        assert any("database unavailable" in str(event) for event in context["events"])
+        return {"source": "groq:test-model", "answer": "The database was unavailable.", "evidence": evidence}
+
+    monkeypatch.setattr(main.llm, "explain", explain)
+    with TestClient(main.app) as client:
+        response = client.post("/api/ai/chat", json={"question": "What happened to the database?"})
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "The database was unavailable."
 
 
 def test_ai_explanations_receive_recent_universal_log(tmp_path, monkeypatch):

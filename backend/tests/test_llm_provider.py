@@ -1,35 +1,30 @@
-import json
-from io import BytesIO
 from unittest.mock import patch
-from urllib.error import HTTPError
 
 import pytest
 
 from backend.app.llm.provider import LLMProvider
 
 
-def test_groq_provider_answers_general_question_without_event_context():
-    response_body = json.dumps({
-        "choices": [{"message": {"content": "I am using the Groq API."}}],
-    }).encode()
-    with patch("backend.app.llm.provider.urlopen") as urlopen:
-        urlopen.return_value.__enter__.return_value.read.return_value = response_body
-
+def test_groq_provider_uses_responses_api_for_general_question():
+    with patch("backend.app.llm.provider.OpenAI") as openai_client:
+        openai_client.return_value.responses.create.return_value.output_text = "I am using the Groq API."
         response = LLMProvider(
             provider="groq",
             api_key="test-key",
-            model="llama-test",
+            base_url="https://api.groq.com/openai/v1",
+            model="openai/gpt-oss-20b",
         ).explain("Which API are you using?", {})
 
-    request = urlopen.call_args.args[0]
-    payload = json.loads(request.data)
-    assert request.full_url == "https://api.groq.com/openai/v1/chat/completions"
-    headers = {name.lower(): value for name, value in request.header_items()}
-    assert headers["authorization"] == "Bearer test-key"
-    assert payload["model"] == "llama-test"
-    assert "Which API are you using?" in payload["messages"][1]["content"]
+    openai_client.assert_called_once_with(
+        api_key="test-key",
+        base_url="https://api.groq.com/openai/v1",
+        timeout=45,
+    )
+    request = openai_client.return_value.responses.create.call_args.kwargs
+    assert request["model"] == "openai/gpt-oss-20b"
+    assert "Which API are you using?" in request["input"]
     assert response == {
-        "source": "groq:llama-test",
+        "source": "groq:openai/gpt-oss-20b",
         "answer": "I am using the Groq API.",
         "evidence": {},
     }
@@ -40,18 +35,11 @@ def test_groq_provider_reports_missing_api_key():
         LLMProvider(api_key="").explain("General question", {})
 
 
-def test_groq_provider_explains_cloudflare_access_denial_without_exposing_key():
-    denied = HTTPError(
-        "https://api.groq.com/openai/v1/chat/completions",
-        403,
-        "Forbidden",
-        {},
-        BytesIO(b"error code: 1010"),
-    )
-    with patch("backend.app.llm.provider.urlopen", side_effect=denied):
-        with pytest.raises(RuntimeError, match="Cloudflare error 1010") as error:
+def test_groq_provider_rejects_empty_responses():
+    with patch("backend.app.llm.provider.OpenAI") as openai_client:
+        openai_client.return_value.responses.create.return_value.output_text = " "
+        with pytest.raises(RuntimeError, match="empty answer"):
             LLMProvider(api_key="private-key").explain("General question", {})
-    assert "private-key" not in str(error.value)
 
 
 def test_chat_endpoint_accepts_general_questions_without_an_active_experiment(tmp_path, monkeypatch):
