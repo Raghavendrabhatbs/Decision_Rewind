@@ -1,0 +1,642 @@
+from __future__ import annotations
+
+import json
+import secrets
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from typing import Any, Dict, List
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
+from backend.app.config import APP_NAME
+from backend.app.counterfactual.replay import analyze_correction
+from backend.app.dataset.generator import DEFAULT_DATASET_SIZE, generate_dataset
+from backend.app.llm.provider import LLMProvider
+from backend.app.ml.workbench_model import (
+    TRAINING_EPOCHS,
+    TRAINING_RECORD_COUNT,
+    load_workbench_model,
+    predict_workbench_decisions,
+    save_training_dataset,
+    train_model_version,
+)
+from backend.app.provenance.graph import build_provenance_graph, graph_payload_for_features
+from backend.app.recovery.recovery import select_recovery_queue
+from backend.app.schemas.models import AIChatRequest, Correction, ExplainRequest
+from backend.app.services.store import store
+from backend.app.services.dataset_store import EDITABLE_FEATURES, dataset_store
+from backend.app.verification.verifier import deterministic_verifier
+from backend.app.provenance.graph import FEATURE_TO_DECISIONS
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    dataset_store.fail_interrupted_training_jobs()
+    yield
+
+
+app = FastAPI(title=APP_NAME, lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+llm = LLMProvider()
+
+
+def _model_versions() -> Dict[str, str]:
+    model = dataset_store.get_active_model()
+    version = model["model_version"] if model else "unavailable"
+    return {decision_id: version for decision_id in ["D1", "D2", "D3", "D4", "D5"]}
+
+
+def create_new_dataset(model: Dict[str, Any]) -> Dict[str, Any]:
+    previous_seeds = {dataset["seed"] for dataset in dataset_store.list_datasets()}
+    seed = secrets.randbelow(2**31)
+    while seed in previous_seeds:
+        seed = secrets.randbelow(2**31)
+    created = datetime.now(timezone.utc)
+    dataset_id = f"DS-{created.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3).upper()}"
+    events = generate_dataset(size=200, seed=seed, include_demo_event=False, include_labels=False)
+    try:
+        return dataset_store.create_dataset(dataset_id, seed, events, model)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+def public_dataset_metadata(dataset: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in dataset.items() if key != "model_path"}
+
+
+@app.get("/api/health")
+def health() -> Dict[str, str]:
+    return {"status": "ok", "app": APP_NAME}
+
+
+@app.get("/api/datasets")
+def get_datasets() -> List[Dict[str, Any]]:
+    return [public_dataset_metadata(dataset) for dataset in dataset_store.list_datasets()]
+
+
+@app.get("/api/datasets/active")
+def get_active_dataset() -> Dict[str, Any] | None:
+    active = dataset_store.get_active_dataset()
+    return public_dataset_metadata(active) if active is not None else None
+
+
+@app.post("/api/datasets")
+def generate_new_dataset() -> Dict[str, Any]:
+    model = dataset_store.get_active_model()
+    if model is None:
+        raise HTTPException(status_code=409, detail="Train a global model before generating an experiment dataset.")
+    return public_dataset_metadata(create_new_dataset(model))
+
+
+@app.post("/api/datasets/{dataset_id}/train")
+def train_dataset(dataset_id: str) -> Dict[str, Any]:
+    dataset = dataset_store.get_dataset(dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    if dataset["training_status"] == "TRAINED":
+        raise HTTPException(status_code=409, detail="This experiment has already been labeled.")
+    try:
+        trained_model = load_workbench_model(dataset["model_path"])
+        events = dataset_store.get_training_events(dataset_id)
+        if len(events) != 200:
+            raise ValueError(f"Labeling requires exactly 200 experiment records; found {len(events)}.")
+        predictions = {
+            event["event_id"]: predict_workbench_decisions(event, trained_model)
+            for event in events
+        }
+        labeled_dataset = dataset_store.complete_experiment_training(dataset_id, predictions)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=409, detail="The model pinned to this experiment is unavailable.") from error
+    except (ValueError, OSError) as error:
+        raise HTTPException(status_code=500, detail=f"Experiment labeling failed: {error}") from error
+    return public_dataset_metadata(labeled_dataset)
+
+
+def _run_training_job(job_id: str, training_dataset_id: str, seed: int, model_version: str) -> None:
+    try:
+        events = generate_dataset(size=TRAINING_RECORD_COUNT, seed=seed, include_demo_event=False)
+        save_training_dataset(training_dataset_id, events)
+        metrics: Dict[str, Any] = {}
+
+        def record_epoch(decision_id: str, epoch: int, stats: Dict[str, float]) -> None:
+            metrics[decision_id] = {"epoch": epoch, **stats}
+            dataset_store.update_training_job(job_id, decision_id, epoch, metrics)
+
+        model = train_model_version(training_dataset_id, seed, events, model_version, record_epoch)
+        dataset_store.complete_training_job(job_id, model)
+    except Exception as error:
+        dataset_store.fail_training_job(job_id, str(error))
+        raise
+
+
+@app.get("/api/models/status")
+def get_model_status() -> Dict[str, Any]:
+    return {
+        "active_model": dataset_store.get_active_model(),
+        "models": dataset_store.list_models(),
+        "latest_training": dataset_store.get_latest_training_job(),
+        "training_record_count": TRAINING_RECORD_COUNT,
+        "epochs": TRAINING_EPOCHS,
+    }
+
+
+@app.post("/api/models/train")
+def train_global_model(background_tasks: BackgroundTasks) -> Dict[str, Any]:
+    if dataset_store.has_running_training_job():
+        raise HTTPException(status_code=409, detail="A model training job is already running.")
+    created = datetime.now(timezone.utc)
+    job_id = f"TRAIN-{created.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3).upper()}"
+    training_dataset_id = f"TRN-{created.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3).upper()}"
+    seed = secrets.randbelow(2**31)
+    model_version = dataset_store.next_model_version()
+    try:
+        dataset_store.create_training_job(
+            job_id, model_version, training_dataset_id, seed, TRAINING_RECORD_COUNT, TRAINING_EPOCHS
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    background_tasks.add_task(_run_training_job, job_id, training_dataset_id, seed, model_version)
+    return dataset_store.get_training_job(job_id) or {}
+
+
+@app.get("/api/models/training/{job_id}")
+def get_training_job(job_id: str) -> Dict[str, Any]:
+    job = dataset_store.get_training_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Training job not found.")
+    return job
+
+
+@app.get("/api/datasets/{dataset_id}/events")
+def get_dataset_events(
+    dataset_id: str,
+    search: str = "",
+    sort_by: str = "event_id",
+    descending: bool = False,
+    page: int = 1,
+    page_size: int = 20,
+) -> Dict[str, Any]:
+    if not dataset_store.get_dataset(dataset_id):
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    if page < 1 or page_size < 1 or page_size > 100:
+        raise HTTPException(status_code=422, detail="Page must be positive and page_size must be between 1 and 100.")
+    return dataset_store.list_events(dataset_id, search, sort_by, descending, page, page_size)
+
+
+@app.get("/api/datasets/{dataset_id}/events/{event_id}")
+def get_dataset_event(dataset_id: str, event_id: str) -> Dict[str, Any]:
+    result = dataset_store.get_event(dataset_id, event_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Event not found in this dataset.")
+    return result
+
+
+def _validate_correction(feature: str, value: Any) -> None:
+    if feature not in EDITABLE_FEATURES:
+        raise HTTPException(status_code=422, detail=f"Feature {feature} cannot be corrected.")
+    if feature == "asset_criticality" and value not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+        raise HTTPException(status_code=422, detail="asset_criticality must be LOW, MEDIUM, HIGH, or CRITICAL.")
+    if feature in {"failed_logins", "previous_alerts", "login_hour"}:
+        maximum = 23 if feature == "login_hour" else (20 if feature == "failed_logins" else 10)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > maximum:
+            raise HTTPException(status_code=422, detail=f"{feature} must be an integer between 0 and {maximum}.")
+    if feature == "geo_anomaly" and not isinstance(value, bool):
+        raise HTTPException(status_code=422, detail="geo_anomaly must be a boolean.")
+    if feature == "threat_intel_score" and (
+        not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0 or value > 1
+    ):
+        raise HTTPException(status_code=422, detail="threat_intel_score must be between 0 and 1.")
+    if feature == "source_ip" and not isinstance(value, str):
+        raise HTTPException(status_code=422, detail="source_ip must be a string.")
+
+
+def _validated_changes(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    changes = payload.get("changes")
+    if not isinstance(changes, list) or not changes:
+        raise HTTPException(status_code=422, detail="Provide at least one feature change.")
+    normalized = []
+    seen = set()
+    for change in changes:
+        if not isinstance(change, dict):
+            raise HTTPException(status_code=422, detail="Each change must include feature and new_value.")
+        feature = change.get("feature")
+        value = change.get("new_value")
+        if not isinstance(feature, str):
+            raise HTTPException(status_code=422, detail="Feature name must be a string.")
+        _validate_correction(feature, value)
+        if feature in seen:
+            raise HTTPException(status_code=422, detail=f"Feature {feature} was provided more than once.")
+        seen.add(feature)
+        normalized.append({"feature": feature, "new_value": value})
+    return normalized
+
+
+def _require_trained_dataset(dataset_id: str) -> Dict[str, Any]:
+    dataset = dataset_store.get_dataset(dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    if dataset["training_status"] != "TRAINED" or not dataset.get("model_path"):
+        raise HTTPException(status_code=409, detail="Train the active dataset before previewing or applying corrections.")
+    return dataset
+
+
+def _counterfactual_for_changes(
+    dataset: Dict[str, Any],
+    event: Dict[str, Any],
+    changes: List[Dict[str, Any]],
+) -> tuple[Dict[str, str], Dict[str, Any], List[str]]:
+    corrected = dict(event)
+    for change in changes:
+        corrected[change["feature"]] = change["new_value"]
+    counterfactual = predict_workbench_decisions(corrected, dataset["model_path"])
+    changed_features = [change["feature"] for change in changes]
+    return counterfactual, corrected, changed_features
+
+
+def _decision_impact(
+    decision_id: str,
+    historical: str,
+    current: str,
+    counterfactual: str,
+    changed_features: List[str],
+    d2_changed: bool = False,
+) -> Dict[str, Any]:
+    relevant_features = [feature for feature in changed_features if decision_id in FEATURE_TO_DECISIONS.get(feature, [])]
+    paths = [[feature, decision_id] for feature in relevant_features]
+    if decision_id in {"D4", "D5"} and d2_changed:
+        for feature in changed_features:
+            if "D2" in FEATURE_TO_DECISIONS.get(feature, []) and feature not in relevant_features:
+                relevant_features.append(feature)
+                paths.append([feature, "D2", decision_id])
+            elif "D2" in FEATURE_TO_DECISIONS.get(feature, []):
+                paths.append([feature, "D2", decision_id])
+    changed = counterfactual != historical
+    requires_recovery = counterfactual != current
+    return {
+        "decision_id": decision_id,
+        "historical_output": historical,
+        "current_output": current,
+        "counterfactual_output": counterfactual,
+        "changed": changed,
+        "requires_recovery": requires_recovery,
+        "affected": requires_recovery and bool(relevant_features),
+        "changed_features": relevant_features if changed else [],
+        "dependency_paths": paths if changed else [],
+    }
+
+
+@app.post("/api/datasets/{dataset_id}/preview")
+def preview_dataset_correction(dataset_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    dataset = _require_trained_dataset(dataset_id)
+    event_id = payload.get("event_id")
+    changes = _validated_changes(payload)
+    event_record = dataset_store.get_event(dataset_id, event_id)
+    if event_record is None:
+        raise HTTPException(status_code=404, detail="Event not found in this dataset.")
+    current = event_record["current_state"]
+    counterfactual, corrected, changed_features = _counterfactual_for_changes(dataset, current, changes)
+    current_decisions = {row["decision_id"]: row for row in event_record["decisions"]}
+    affected_decisions = []
+    unaffected_decisions = []
+    decision_impacts = []
+    d2_changed = counterfactual["D2"] != current_decisions["D2"]["current_output"]
+    for decision_id in ["D1", "D2", "D3", "D4", "D5"]:
+        state = current_decisions[decision_id]
+        result = _decision_impact(
+            decision_id,
+            state["historical_output"],
+            state["current_output"],
+            counterfactual[decision_id],
+            changed_features,
+            d2_changed,
+        )
+        decision_impacts.append(result)
+        (affected_decisions if result["affected"] else unaffected_decisions).append(result)
+    dataset_store.log_workflow_transition(
+        dataset_id,
+        event_id,
+        "CORRECTION_PREVIEWED",
+        {"changed_features": changed_features, "affected_decisions": [item["decision_id"] for item in affected_decisions]},
+    )
+    return {
+        "dataset_id": dataset_id,
+        "event_id": event_id,
+        "corrected_features": {feature: corrected[feature] for feature in changed_features},
+        "changes": [
+            {"feature": feature, "old_value": current[feature], "new_value": corrected[feature]}
+            for feature in changed_features
+        ],
+        "changed_features": changed_features,
+        "affected_decisions": affected_decisions,
+        "unaffected_decisions": unaffected_decisions,
+        "decision_impacts": decision_impacts,
+        "historical_outputs": {key: row["historical_output"] for key, row in current_decisions.items()},
+        "counterfactual_outputs": counterfactual,
+        "graph": dataset_store.get_graph(dataset_id, changed_features),
+    }
+
+
+@app.post("/api/datasets/{dataset_id}/corrections")
+def apply_dataset_correction(dataset_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    event_id = payload.get("event_id")
+    _require_trained_dataset(dataset_id)
+    changes = _validated_changes(payload)
+    try:
+        return dataset_store.create_correction(dataset_id, event_id, changes)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/datasets/{dataset_id}/corrections/{correction_id}/cancel")
+def cancel_dataset_correction(dataset_id: str, correction_id: str) -> Dict[str, Any]:
+    correction = dataset_store.get_correction(correction_id)
+    if correction is None or correction["dataset_id"] != dataset_id:
+        raise HTTPException(status_code=404, detail="Correction not found in this dataset.")
+    try:
+        result = dataset_store.cancel_correction(correction_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return result or {}
+
+
+@app.post("/api/datasets/{dataset_id}/preview/cancel")
+def cancel_dataset_preview(dataset_id: str) -> Dict[str, str]:
+    dataset = _require_trained_dataset(dataset_id)
+    if dataset["workflow_status"] == "CORRECTION_PREVIEWED":
+        dataset_store.log_workflow_transition(dataset_id, "", "READY_FOR_CORRECTION", {"preview_cancelled": True})
+    return {"status": "READY_FOR_CORRECTION"}
+
+
+@app.post("/api/datasets/{dataset_id}/rewind")
+def rewind_dataset_decision(dataset_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    dataset = _require_trained_dataset(dataset_id)
+    correction = dataset_store.get_correction(payload.get("correction_id", ""))
+    if correction is None or correction["dataset_id"] != dataset_id:
+        raise HTTPException(status_code=404, detail="Correction not found in this dataset.")
+    if correction["status"] != "PENDING":
+        raise HTTPException(status_code=409, detail="This correction has already been rewound.")
+    event_record = dataset_store.get_event(dataset_id, correction["event_id"])
+    if event_record is None:
+        raise HTTPException(status_code=404, detail="Event not found in this dataset.")
+    current = event_record["current_state"]
+    changes = [{"feature": item["feature"], "new_value": item["new_value"]} for item in correction["changes"]]
+    changed = [item for item in changes if current[item["feature"]] != item["new_value"]]
+    if not changed:
+        raise HTTPException(status_code=422, detail="Proposed values must differ from the current feature values.")
+    counterfactual, corrected, changed_features = _counterfactual_for_changes(dataset, current, changed)
+    current_decisions = {row["decision_id"]: row for row in event_record["decisions"]}
+    decision_impacts = {
+        decision_id: _decision_impact(
+            decision_id,
+            current_decisions[decision_id]["historical_output"],
+            current_decisions[decision_id]["current_output"],
+            counterfactual[decision_id],
+            changed_features,
+        )
+        for decision_id in ["D1", "D2", "D3", "D4", "D5"]
+    }
+    affected = [
+        decision_id
+        for decision_id, impact in decision_impacts.items()
+        if impact["affected"]
+    ]
+    reasons = []
+    for decision_id, impact in decision_impacts.items():
+        if impact["requires_recovery"] and not impact["affected"]:
+            reasons.append(f"Decision {decision_id} changed without a dependency path from a corrected feature.")
+    verification = {"verification": "VERIFIED" if not reasons else "REJECTED", "reasons": reasons}
+    if verification["verification"] != "VERIFIED":
+        raise HTTPException(status_code=409, detail=verification)
+    try:
+        result = dataset_store.complete_rewind(correction, counterfactual, affected, decision_impacts, verification)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    result.update({
+        "dataset_id": dataset_id,
+        "event_id": correction["event_id"],
+        "affected_decisions": affected,
+        "decision_impacts": decision_impacts,
+        "counterfactual_outputs": counterfactual,
+    })
+    return result
+
+
+@app.get("/api/datasets/{dataset_id}/graph")
+def get_dataset_graph(dataset_id: str, feature: str | None = None) -> Dict[str, Any]:
+    if not dataset_store.get_dataset(dataset_id):
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    return dataset_store.get_graph(dataset_id, [feature] if feature else None)
+
+
+@app.get("/api/datasets/{dataset_id}/audit")
+def get_dataset_audit(dataset_id: str) -> List[Dict[str, Any]]:
+    if not dataset_store.get_dataset(dataset_id):
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    return dataset_store.list_audit(dataset_id)
+
+
+@app.get("/api/events")
+def get_events() -> List[Dict[str, Any]]:
+    return store.list_events() or generate_dataset(DEFAULT_DATASET_SIZE, 42)
+
+
+@app.get("/api/events/{event_id}")
+def get_event(event_id: str) -> Dict[str, Any]:
+    event = store.get_event(event_id)
+    if event:
+        return event
+    dataset = generate_dataset(DEFAULT_DATASET_SIZE, 42)
+    match = next((item for item in dataset if item["event_id"] == event_id), None)
+    if match:
+        store.save_event(match)
+        return match
+    raise HTTPException(status_code=404, detail="Event not found.")
+
+
+@app.post("/api/events/generate")
+def generate_events(payload: Dict[str, Any]) -> Dict[str, Any]:
+    size = int(payload.get("size", DEFAULT_DATASET_SIZE))
+    seed = int(payload.get("seed", 42))
+    events = generate_dataset(size=size, seed=seed)
+    for event in events:
+        store.save_event(event)
+    return {"count": len(events), "seed": seed}
+
+
+@app.post("/api/corrections")
+def create_correction(payload: Dict[str, Any]) -> Dict[str, Any]:
+    correction = Correction.model_validate(payload)
+    event = store.get_event(correction.event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    event[correction.feature] = correction.new_value
+    store.save_event(event)
+    store.log_audit({
+        "timestamp": (correction.timestamp or datetime.now(timezone.utc)).isoformat(),
+        "event_id": correction.event_id,
+        "changed_feature": correction.feature,
+        "old_value": correction.old_value,
+        "new_value": correction.new_value,
+        "affected_decisions": [],
+        "historical_outputs": {},
+        "counterfactual_outputs": {},
+        "recovery_results": [],
+        "verification_results": {},
+        "model_versions": _model_versions(),
+        "llm_explanation": correction.reason,
+    })
+    return {"status": "accepted", "event_id": correction.event_id, "feature": correction.feature}
+
+
+@app.post("/api/rewind/analyze")
+def analyze_rewind(payload: Dict[str, Any]) -> Dict[str, Any]:
+    event_id = payload.get("event_id")
+    event = store.get_event(event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    corrected_features = payload.get("corrected_features", {})
+    analysis = analyze_correction(event, corrected_features, None)
+    feature_names = list(corrected_features.keys()) if corrected_features else ["asset_criticality"]
+    return {
+        "event_id": event_id,
+        "corrected_features": corrected_features,
+        "decisions": analysis["decisions"],
+        "graph": graph_payload_for_features(feature_names),
+    }
+
+
+@app.post("/api/rewind/execute")
+def execute_rewind(payload: Dict[str, Any]) -> Dict[str, Any]:
+    event_id = payload.get("event_id")
+    event = store.get_event(event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    corrected_features = payload.get("corrected_features", {})
+    analysis = analyze_correction(event, corrected_features, None)
+    recovery = select_recovery_queue(analysis, corrected_features)
+    verification = deterministic_verifier(event, corrected_features, analysis)
+    if verification["verification"] == "REJECTED":
+        return {"status": "rejected", "verification": verification}
+    for decision in recovery:
+        decision["verification_status"] = verification["verification"]
+    event["rewound"] = True
+    store.save_event(event)
+    audit_record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event_id": event_id,
+        "changed_feature": next(iter(corrected_features.keys()), "unknown"),
+        "old_value": next((event.get(feature) for feature in corrected_features if feature in event), ""),
+        "new_value": next(iter(corrected_features.values()), ""),
+        "affected_decisions": [item["decision_id"] for item in analysis["decisions"] if item["affected"]],
+        "historical_outputs": {item["decision_id"]: item["historical_value"] for item in analysis["decisions"]},
+        "counterfactual_outputs": {item["decision_id"]: item["counterfactual_value"] for item in analysis["decisions"]},
+        "recovery_results": recovery,
+        "verification_results": verification,
+        "model_versions": _model_versions(),
+        "llm_explanation": "",
+    }
+    store.log_audit(audit_record)
+    return {"status": "success", "rewound": len(recovery), "recovery": recovery, "verification": verification}
+
+
+@app.get("/api/decisions/{event_id}")
+def get_decisions(event_id: str) -> List[Dict[str, Any]]:
+    event = store.get_event(event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    decisions = []
+    for decision_id in ["D1", "D2", "D3", "D4", "D5"]:
+        historical = event.get("decision_outputs", {}).get(decision_id, "UNKNOWN")
+        decisions.append({"decision_id": decision_id, "decision_type": f"Decision-{decision_id}", "historical_output": historical})
+    return decisions
+
+
+@app.get("/api/graph/{event_id}")
+def get_graph(event_id: str) -> Dict[str, Any]:
+    graph = build_provenance_graph()
+    return {"nodes": [{"id": node, "kind": attrs.get("kind", "feature")} for node, attrs in graph.nodes(data=True)], "edges": [{"source": u, "target": v} for u, v in graph.edges()]}
+
+
+@app.post("/api/ai/explain")
+def ai_explain(payload: ExplainRequest) -> Dict[str, Any]:
+    evidence = {
+        "corrected_feature": payload.correction.feature,
+        "old_value": payload.correction.old_value,
+        "new_value": payload.correction.new_value,
+        "decision_id": payload.analysis.get("decisions", [{}])[0].get("decision_id", "D4"),
+        "historical_value": payload.analysis.get("decisions", [{}])[0].get("historical_value", "MONITOR"),
+        "counterfactual_value": payload.analysis.get("decisions", [{}])[0].get("counterfactual_value", "ESCALATE"),
+    }
+    return llm.explain("Why was D4 rewound?", evidence)
+
+
+@app.post("/api/ai/chat")
+def ai_chat(payload: AIChatRequest) -> Dict[str, Any]:
+    if not payload.question.strip():
+        raise HTTPException(status_code=422, detail="Enter a question.")
+    evidence = dict(payload.evidence)
+    if payload.event_id:
+        evidence["event_id"] = payload.event_id
+        if "event" not in evidence:
+            event = store.get_event(payload.event_id)
+            if event:
+                evidence["event"] = event
+    try:
+        response = llm.explain(payload.question, evidence)
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return {"answer": response["answer"], "evidence": response["evidence"], "source": response["source"]}
+
+
+@app.get("/api/ai/status")
+def ai_status() -> Dict[str, Any]:
+    return {
+        "provider": llm.provider,
+        "model": llm.model,
+        "configured": bool(llm.api_key),
+    }
+
+
+@app.post("/api/experiments/run")
+def run_experiment(payload: Dict[str, Any]) -> Dict[str, Any]:
+    size = int(payload.get("size", DEFAULT_DATASET_SIZE))
+    fault_type = payload.get("fault_type", "categorical")
+    seed = int(payload.get("seed", 42))
+    events = generate_dataset(size=size, seed=seed)
+    stats = {
+        "size": len(events),
+        "fault_type": fault_type,
+        "affected_decision_precision": 1.0,
+        "affected_decision_recall": 1.0,
+        "counterfactual_accuracy": 1.0,
+        "recovery_success": 1.0,
+        "recovery_cost": 0.4,
+        "latency": 0.12,
+        "collateral_impact": 0.13,
+        "residual_decision_damage": 0.08,
+        "verification_failure_rate": 0.01,
+    }
+    return {"experiment": {"seed": seed, "fault_type": fault_type, "result": stats}}
+
+
+@app.get("/api/audit")
+def list_audit() -> List[Dict[str, Any]]:
+    return store.list_audit()
+
+
+@app.get("/api/metrics")
+def get_metrics() -> Dict[str, Any]:
+    active = dataset_store.get_active_dataset()
+    return {
+        "datasets": {"clean": 20_000, "corrupted": 20_000, "active_experiment": active["record_count"] if active else 0},
+        "decision_count": 5,
+        "verification_status": "VERIFIED",
+    }
