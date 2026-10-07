@@ -820,15 +820,147 @@ button:disabled {
 .workbench-graph {
   position: relative;
   width: 100%;
-  height: 420px;
+  height: 560px;
   border: 1px solid rgba(148, 163, 184, 0.14);
   border-radius: 10px;
   overflow: hidden;
+  background: #07111f;
 }
 
 .workbench-graph .react-flow {
   width: 100%;
   height: 100%;
+}
+
+.provenance-intro {
+  max-width: 760px;
+  margin: 0.55rem 0 0;
+  color: #94a3b8;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.provenance-summary,
+.provenance-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+  margin-top: 0.85rem;
+  color: #cbd5e1;
+  font-size: 0.78rem;
+}
+
+.provenance-summary {
+  width: fit-content;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  border-radius: 9px;
+  background: rgba(8, 47, 73, 0.32);
+}
+
+.provenance-summary strong {
+  color: #e0f2fe;
+}
+
+.provenance-legend {
+  gap: 0.55rem 1.15rem;
+  margin-bottom: 0.7rem;
+}
+
+.provenance-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 3px;
+  background: #334155;
+}
+
+.feature-swatch { background: #164e63; }
+.decision-swatch { background: #312e81; }
+.output-swatch { background: #334155; }
+.changed-swatch { background: #b45309; }
+
+.legend-line {
+  display: inline-block;
+  width: 1rem;
+  border-top: 2px solid #64748b;
+}
+
+.workbench-graph .react-flow__node.provenance-node {
+  width: 205px !important;
+  padding: 0;
+  border: 1px solid #475569;
+  border-radius: 11px;
+  color: #e2e8f0;
+  background: #111c2d;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+}
+
+.workbench-graph .react-flow__node.provenance-feature {
+  border-color: #0e7490;
+  background: linear-gradient(145deg, #123447, #0d2233);
+}
+
+.workbench-graph .react-flow__node.provenance-decision {
+  border-color: #6366f1;
+  background: linear-gradient(145deg, #29275a, #171a37);
+}
+
+.workbench-graph .react-flow__node.provenance-output {
+  border-color: #475569;
+  background: linear-gradient(145deg, #1e293b, #111827);
+}
+
+.workbench-graph .react-flow__node.provenance-node.is-changed,
+.workbench-graph .react-flow__node.provenance-node.is-affected {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.42), 0 6px 20px rgba(180, 83, 9, 0.2);
+}
+
+.provenance-node-content {
+  display: flex;
+  min-height: 60px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.22rem;
+  padding: 0.65rem 0.75rem;
+  line-height: 1.3;
+  white-space: normal;
+}
+
+.provenance-node-kicker {
+  color: #94a3b8;
+  font-size: 0.58rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+
+.provenance-node-content strong {
+  color: #f8fafc;
+  font-size: 0.82rem;
+}
+
+.provenance-node-value {
+  color: #fde68a;
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.provenance-output-status {
+  color: #a5b4fc;
+  font-size: 0.68rem;
+}
+
+.workbench-graph .react-flow__edge-text {
+  fill: #cbd5e1;
+  font-size: 0.62rem;
 }
 
 .workbench-graph.is-empty {
@@ -904,6 +1036,14 @@ button:disabled {
   .search-control,
   .search-control input {
     width: 100%;
+  }
+
+  .workbench-graph {
+    height: 500px;
+  }
+
+  .provenance-summary {
+    width: auto;
   }
 
   .feature-detail-grid {
