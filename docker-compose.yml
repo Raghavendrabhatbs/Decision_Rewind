@@ -12,7 +12,7 @@ services:
     environment:
       - APP_NAME=DECISION-REWIND
       - LLM_PROVIDER=openai
-      - LLM_API_KEY=
+      - LLM_API_KEY=${LLM_API_KEY:-}
 
   frontend:
     image: node:20-alpine
