@@ -125,6 +125,52 @@ def test_explicit_training_gates_experiments_and_versions_are_reused(tmp_path, m
         assert second_experiment["training_status"] == "NOT_TRAINED"
         assert second_experiment["model_version"] == "V2"
         assert training_store.get_dataset(first_experiment["dataset_id"])["model_version"] == "V1"
+        changes = [
+            {"feature": "failed_logins", "new_value": (first_event["failed_logins"] + 1) % 21},
+            {"feature": "geo_anomaly", "new_value": not first_event["geo_anomaly"]},
+            {
+                "feature": "threat_intel_score",
+                "new_value": 0.0 if first_event["threat_intel_score"] > 0.0 else 1.0,
+            },
+        ]
+        preview = client.post(
+            f"/api/datasets/{first_experiment['dataset_id']}/preview",
+            json={"event_id": first_event["event_id"], "changes": changes},
+        )
+        assert preview.status_code == 200, preview.text
+        assert len(preview.json()["changes"]) == 3
+        correction = client.post(
+            f"/api/datasets/{first_experiment['dataset_id']}/corrections",
+            json={"event_id": first_event["event_id"], "changes": changes},
+        )
+        assert correction.status_code == 200, correction.text
+        rewind = client.post(
+            f"/api/datasets/{first_experiment['dataset_id']}/rewind",
+            json={"correction_id": correction.json()["correction_id"]},
+        )
+        assert rewind.status_code == 200, rewind.text
+        assert rewind.json()["verification"]["verification"] == "VERIFIED"
+        recovered_event = training_store.get_event(first_experiment["dataset_id"], first_event["event_id"])
+        assert recovered_event["original_state"]["failed_logins"] == first_event["failed_logins"]
+        assert recovered_event["current_state"]["failed_logins"] == changes[0]["new_value"]
+        assert training_store.get_dataset(first_experiment["dataset_id"])["model_version"] == "V1"
+        assert {
+            record["event_type"]
+            for record in main.universal_log.recent(100)
+            if record["details"].get("event_id") == first_event["event_id"]
+        } >= {
+            "counterfactual.previewed",
+            "workflow.correction.proposed",
+            "workflow.verification.completed",
+            "workflow.rewind.completed",
+        }
+        pinned_model = training_store.get_model(second_experiment["model_id"])
+        artifact = Path(pinned_model["artifact_path"])
+        artifact.write_bytes(artifact.read_bytes() + b"tampered")
+        rejected = client.post(f"/api/datasets/{second_experiment['dataset_id']}/train")
+        assert rejected.status_code == 409
+        assert "integrity check" in rejected.json()["detail"]
+        assert training_store.get_dataset(second_experiment["dataset_id"])["training_status"] == "NOT_TRAINED"
 
 
 def test_training_metadata_and_historical_decisions_are_persisted(tmp_path, monkeypatch):
@@ -214,9 +260,10 @@ def test_multifeature_correction_preserves_history_and_rewinds_only_changed_deci
     ]
     impacts = {
         row["decision_id"]: {
-            "changed": row["decision_id"] in changed_ids,
-            "changed_features": [change["feature"] for change in changes],
-            "dependency_paths": [],
+            "historical_output": row["historical_output"],
+            "current_output": row["current_output"],
+            "counterfactual_output": counterfactual[row["decision_id"]],
+            "affected": row["decision_id"] in changed_ids,
         }
         for row in before["decisions"]
     }
@@ -238,6 +285,67 @@ def test_multifeature_correction_preserves_history_and_rewinds_only_changed_deci
     for row in after["decisions"]:
         expected = counterfactual[row["decision_id"]] if row["decision_id"] in changed_ids else row["historical_output"]
         assert row["current_output"] == expected
+
+
+def test_failed_persistence_verification_rolls_back_recovery_transaction(tmp_path, monkeypatch):
+    import backend.app.services.dataset_store as dataset_store_module
+
+    dataset_store, events, dataset = _trained_store(tmp_path, monkeypatch)
+    event = events[0]
+    before = dataset_store.get_event("DS-TEST", event["event_id"])
+    correction = dataset_store.create_correction(
+        "DS-TEST",
+        event["event_id"],
+        [
+            {"feature": "asset_criticality", "new_value": "CRITICAL"},
+            {"feature": "failed_logins", "new_value": (event["failed_logins"] + 1) % 21},
+            {"feature": "geo_anomaly", "new_value": not event["geo_anomaly"]},
+        ],
+    )
+    corrected = dict(before["current_state"])
+    for change in correction["changes"]:
+        corrected[change["feature"]] = change["new_value"]
+    counterfactual = predict_workbench_decisions(corrected, dataset["model_path"])
+    impacts = {}
+    affected = []
+    for decision in before["decisions"]:
+        decision_id = decision["decision_id"]
+        changed = decision["current_output"] != counterfactual[decision_id]
+        if changed:
+            affected.append(decision_id)
+        impacts[decision_id] = {
+            "historical_output": decision["historical_output"],
+            "current_output": decision["current_output"],
+            "counterfactual_output": counterfactual[decision_id],
+            "affected": changed,
+        }
+    monkeypatch.setattr(
+        dataset_store_module,
+        "verify_rewind_persistence",
+        lambda *_: {
+            "verification": "REJECTED",
+            "verified": False,
+            "errors": ["Injected verification failure."],
+        },
+    )
+
+    with pytest.raises(ValueError, match="Injected verification failure"):
+        dataset_store.complete_rewind(
+            correction,
+            counterfactual,
+            affected,
+            impacts,
+            {"verification": "VERIFIED", "reasons": []},
+        )
+
+    after = dataset_store.get_event("DS-TEST", event["event_id"])
+    assert after["current_state"] == before["current_state"]
+    assert after["decisions"] == before["decisions"]
+    assert dataset_store.get_correction(correction["correction_id"])["status"] == "PENDING"
+    assert not any(
+        record["operation"] in {"RECOVERED", "VERIFIED"}
+        for record in dataset_store.list_audit("DS-TEST", limit=None)
+    )
 
 
 def test_rewind_includes_downstream_decisions_when_d2_changes(tmp_path, monkeypatch):

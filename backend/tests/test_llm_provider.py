@@ -23,6 +23,10 @@ def test_groq_provider_uses_responses_api_for_general_question():
     request = openai_client.return_value.responses.create.call_args.kwargs
     assert request["model"] == "openai/gpt-oss-20b"
     assert "Which API are you using?" in request["input"]
+    assert "using only the supplied" in request["instructions"]
+    assert "If sources conflict" in request["instructions"]
+    assert "Never authorize" in request["instructions"]
+    assert "hidden chain-of-thought" in request["instructions"]
     assert response == {
         "source": "groq:openai/gpt-oss-20b",
         "answer": "I am using the Groq API.",

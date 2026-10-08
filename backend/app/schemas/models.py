@@ -66,5 +66,8 @@ class ExplainRequest(BaseModel):
 
 class AIChatRequest(BaseModel):
     question: str
+    dataset_id: Optional[str] = None
+    experiment_id: Optional[str] = None
     event_id: Optional[str] = None
-    evidence: Dict[str, Any] = Field(default_factory=dict)
+    correction_id: Optional[str] = None
+    decision_id: Optional[str] = None

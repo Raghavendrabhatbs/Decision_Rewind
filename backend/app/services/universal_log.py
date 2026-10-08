@@ -22,6 +22,17 @@ _QUERY_STOP_WORDS = {
     "is", "it", "me", "of", "on", "or", "please", "show", "tell", "that", "the", "this",
     "to", "was", "were", "what", "when", "where", "which", "who", "why", "with",
 }
+_IDENTIFIER_FILTERS = {
+    "event_id",
+    "experiment_id",
+    "dataset_id",
+    "model_version",
+    "decision_id",
+    "correction_id",
+    "rewind_id",
+    "verification_id",
+    "correlation_id",
+}
 
 
 def _query_terms(question: str) -> set[str]:
@@ -35,6 +46,50 @@ def _query_terms(question: str) -> set[str]:
             word = word[:-1]
         terms.add(word)
     return terms
+
+
+def _key_values(value: Any, key: str) -> list[str]:
+    found = []
+    if isinstance(value, dict):
+        for child_key, child in value.items():
+            if str(child_key).lower() == key.lower() and isinstance(child, (str, int, float)):
+                found.append(str(child))
+            found.extend(_key_values(child, key))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(_key_values(child, key))
+    return found
+
+
+def _matches_filters(event: Dict[str, Any], filters: Dict[str, Any]) -> bool:
+    identifiers = {
+        key: str(value).lower()
+        for key, value in filters.items()
+        if key in _IDENTIFIER_FILTERS and value
+    }
+    if identifiers and not any(
+        expected in {value.lower() for value in _key_values(event, key)}
+        for key, expected in identifiers.items()
+    ):
+        return False
+
+    details = event.get("details", {})
+    exact_fields = {
+        "operation": (event.get("event_type"), details.get("operation") if isinstance(details, dict) else None),
+        "source": (event.get("source"),),
+        "level": (details.get("level") if isinstance(details, dict) else None,),
+    }
+    for key, values in exact_fields.items():
+        expected = filters.get(key)
+        if expected and str(expected).lower() not in {str(value).lower() for value in values if value is not None}:
+            return False
+
+    timestamp = str(event.get("timestamp", ""))
+    if filters.get("timestamp_from") and timestamp < str(filters["timestamp_from"]):
+        return False
+    if filters.get("timestamp_to") and timestamp > str(filters["timestamp_to"]):
+        return False
+    return True
 
 
 def _sanitize(value: Any, key: str = "") -> Any:
@@ -138,11 +193,19 @@ class UniversalLog:
     def context_for_ai(
         self,
         question: str,
+        references: Dict[str, str] | None = None,
+        filters: Dict[str, Any] | None = None,
         event_limit: int = 32,
         context_limit: int = 24_000,
         detail_limit: int = 1200,
     ) -> Dict[str, Any]:
         terms = _query_terms(question)
+        reference_values = {
+            str(value).lower()
+            for value in (references or {}).values()
+            if value
+        }
+        event_filters = filters or {}
         recent_events: deque[tuple[int, Dict[str, Any]]] = deque(maxlen=10)
         matches: list[tuple[int, int, Dict[str, Any]]] = []
         event_type_counts: Counter[str] = Counter()
@@ -169,17 +232,34 @@ class UniversalLog:
                             first_timestamp = timestamp
                         last_timestamp = timestamp
                         recent_events.append((index, event))
-                        if not terms:
+                        if event_filters and not _matches_filters(event, event_filters):
+                            continue
+                        if not terms and not reference_values:
+                            if event_filters:
+                                matching_event_count += 1
+                                heapq.heappush(matches, (1, index, event))
+                                if len(matches) > event_limit:
+                                    heapq.heappop(matches)
                             continue
                         searchable = json.dumps(event, ensure_ascii=True, separators=(",", ":")).lower()
-                        matched_terms = sum(term in searchable for term in terms)
-                        if matched_terms:
+                        matched_references = sum(reference in searchable for reference in reference_values)
+                        matched_terms = (
+                            0
+                            if reference_values
+                            else sum(term in searchable for term in terms)
+                        )
+                        relevance = matched_references * 100 + matched_terms
+                        if relevance:
                             matching_event_count += 1
-                            heapq.heappush(matches, (matched_terms, index, event))
+                            heapq.heappush(matches, (relevance, index, event))
                             if len(matches) > event_limit:
                                 heapq.heappop(matches)
 
-        selected = {index: event for index, event in recent_events}
+        selected = (
+            {}
+            if terms or reference_values or event_filters
+            else {index: event for index, event in recent_events}
+        )
         selected.update({index: event for _, index, event in matches})
         ordered_events = []
         for index, event in sorted(selected.items()):
@@ -202,11 +282,15 @@ class UniversalLog:
             used_chars += encoded_size
         included.reverse()
 
+        truncated = total_events > len(included)
         return {
             "total_events": total_events,
+            "event_count": total_events,
             "matching_events": matching_event_count,
             "included_events": len(included),
+            "returned_event_count": len(included),
             "omitted_events": total_events - len(included),
+            "truncated": truncated,
             "time_range": {"first": first_timestamp, "last": last_timestamp},
             "event_type_counts": dict(event_type_counts.most_common(30)),
             "other_event_type_count": max(0, len(event_type_counts) - 30),

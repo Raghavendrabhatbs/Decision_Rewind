@@ -20,8 +20,7 @@ from backend.app.services.universal_log import (
 
 install_application_log_capture()
 
-from backend.app.counterfactual.replay import analyze_correction
-from backend.app.dataset.generator import DEFAULT_DATASET_SIZE, generate_dataset
+from backend.app.dataset.generator import generate_dataset
 from backend.app.llm.provider import LLMProvider
 from backend.app.ml.workbench_model import (
     TRAINING_EPOCHS,
@@ -31,12 +30,11 @@ from backend.app.ml.workbench_model import (
     save_training_dataset,
     train_model_version,
 )
-from backend.app.provenance.graph import build_provenance_graph, graph_payload_for_features
-from backend.app.recovery.recovery import select_recovery_queue
-from backend.app.schemas.models import AIChatRequest, Correction, ExplainRequest
+from backend.app.provenance.graph import build_provenance_graph
+from backend.app.schemas.models import AIChatRequest
 from backend.app.services.store import store
 from backend.app.services.dataset_store import EDITABLE_FEATURES, dataset_store
-from backend.app.verification.verifier import deterministic_verifier
+from backend.app.services.llm_evidence import build_llm_evidence
 from backend.app.provenance.graph import FEATURE_TO_DECISIONS
 
 
@@ -134,12 +132,6 @@ def receive_frontend_log(payload: Dict[str, Any]) -> Response:
     return Response(status_code=204)
 
 
-def _model_versions() -> Dict[str, str]:
-    model = dataset_store.get_active_model()
-    version = model["model_version"] if model else "unavailable"
-    return {decision_id: version for decision_id in ["D1", "D2", "D3", "D4", "D5"]}
-
-
 def create_new_dataset(model: Dict[str, Any]) -> Dict[str, Any]:
     previous_seeds = {dataset["seed"] for dataset in dataset_store.list_datasets()}
     seed = secrets.randbelow(2**31)
@@ -201,7 +193,7 @@ def train_dataset(dataset_id: str) -> Dict[str, Any]:
     if dataset["training_status"] == "TRAINED":
         raise HTTPException(status_code=409, detail="This experiment has already been labeled.")
     try:
-        trained_model = load_workbench_model(dataset["model_path"])
+        trained_model = _load_pinned_model(dataset)
         events = dataset_store.get_training_events(dataset_id)
         if len(events) != 200:
             raise ValueError(f"Labeling requires exactly 200 experiment records; found {len(events)}.")
@@ -212,11 +204,16 @@ def train_dataset(dataset_id: str) -> Dict[str, Any]:
         universal_log.record(
             "model.predictions.generated",
             "workbench_model",
-            {"dataset_id": dataset_id, "model_id": dataset["model_id"], "predictions": predictions},
+            {
+                "dataset_id": dataset_id,
+                "experiment_id": dataset["experiment_id"],
+                "model_id": dataset["model_id"],
+                "model_version": dataset["model_version"],
+                "correlation_id": dataset_id,
+                "predictions": predictions,
+            },
         )
         labeled_dataset = dataset_store.complete_experiment_training(dataset_id, predictions)
-    except FileNotFoundError as error:
-        raise HTTPException(status_code=409, detail="The model pinned to this experiment is unavailable.") from error
     except (ValueError, OSError) as error:
         raise HTTPException(status_code=500, detail=f"Experiment labeling failed: {error}") from error
     return public_dataset_metadata(labeled_dataset)
@@ -372,6 +369,28 @@ def _require_trained_dataset(dataset_id: str) -> Dict[str, Any]:
     return dataset
 
 
+def _load_pinned_model(dataset: Dict[str, Any]) -> Dict[str, Any]:
+    model_id = dataset.get("model_id")
+    model_version = dataset.get("model_version")
+    training_dataset_id = dataset.get("training_dataset_id")
+    if not model_id or not model_version or not training_dataset_id:
+        raise HTTPException(status_code=409, detail="The experiment is missing its pinned model metadata.")
+    model = dataset_store.get_model(model_id)
+    if (
+        model is None
+        or model["model_version"] != model_version
+        or model["training_dataset_id"] != training_dataset_id
+    ):
+        raise HTTPException(status_code=409, detail="The model metadata pinned to this experiment is unavailable.")
+    try:
+        return load_workbench_model(model["artifact_path"], model["artifact_sha256"])
+    except (FileNotFoundError, OSError, ValueError) as error:
+        raise HTTPException(
+            status_code=409,
+            detail="The model artifact pinned to this experiment is unavailable or failed its integrity check.",
+        ) from error
+
+
 def _counterfactual_for_changes(
     dataset: Dict[str, Any],
     event: Dict[str, Any],
@@ -380,7 +399,7 @@ def _counterfactual_for_changes(
     corrected = dict(event)
     for change in changes:
         corrected[change["feature"]] = change["new_value"]
-    counterfactual = predict_workbench_decisions(corrected, dataset["model_path"])
+    counterfactual = predict_workbench_decisions(corrected, _load_pinned_model(dataset))
     changed_features = [change["feature"] for change in changes]
     return counterfactual, corrected, changed_features
 
@@ -450,6 +469,22 @@ def preview_dataset_correction(dataset_id: str, payload: Dict[str, Any]) -> Dict
         "CORRECTION_PREVIEWED",
         {"changed_features": changed_features, "affected_decisions": [item["decision_id"] for item in affected_decisions]},
     )
+    universal_log.record(
+        "counterfactual.previewed",
+        "dataset_workbench",
+        {
+            "dataset_id": dataset_id,
+            "event_id": event_id,
+            "correlation_id": f"{dataset_id}:{event_id}",
+            "model_version": dataset["model_version"],
+            "changes": [
+                {"feature": feature, "old_value": current[feature], "new_value": corrected[feature]}
+                for feature in changed_features
+            ],
+            "counterfactual_outputs": counterfactual,
+            "affected_decisions": [item["decision_id"] for item in affected_decisions],
+        },
+    )
     return {
         "dataset_id": dataset_id,
         "event_id": event_id,
@@ -474,11 +509,23 @@ def apply_dataset_correction(dataset_id: str, payload: Dict[str, Any]) -> Dict[s
     _require_trained_dataset(dataset_id)
     changes = _validated_changes(payload)
     try:
-        return dataset_store.create_correction(dataset_id, event_id, changes)
+        result = dataset_store.create_correction(dataset_id, event_id, changes)
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    universal_log.record(
+        "workflow.correction.proposed",
+        "dataset_workbench",
+        {
+            "dataset_id": dataset_id,
+            "event_id": event_id,
+            "correction_id": result["correction_id"],
+            "correlation_id": f"{dataset_id}:{event_id}",
+            "changes": result["changes"],
+        },
+    )
+    return result
 
 
 @app.post("/api/datasets/{dataset_id}/corrections/{correction_id}/cancel")
@@ -554,6 +601,32 @@ def rewind_dataset_decision(dataset_id: str, payload: Dict[str, Any]) -> Dict[st
         "decision_impacts": decision_impacts,
         "counterfactual_outputs": counterfactual,
     })
+    correlation_id = f"{dataset_id}:{correction['event_id']}"
+    universal_log.record(
+        "workflow.verification.completed",
+        "dataset_workbench",
+        {
+            "dataset_id": dataset_id,
+            "event_id": correction["event_id"],
+            "correction_id": correction["correction_id"],
+            "correlation_id": correlation_id,
+            "verification": verification,
+        },
+    )
+    universal_log.record(
+        "workflow.rewind.completed",
+        "dataset_workbench",
+        {
+            "dataset_id": dataset_id,
+            "event_id": correction["event_id"],
+            "correction_id": correction["correction_id"],
+            "correlation_id": correlation_id,
+            "model_version": dataset["model_version"],
+            "affected_decisions": affected,
+            "rewind_operations": result["rewind_operations"],
+            "verification": verification["verification"],
+        },
+    )
     return result
 
 
@@ -573,119 +646,46 @@ def get_dataset_audit(dataset_id: str) -> List[Dict[str, Any]]:
 
 @app.get("/api/events")
 def get_events() -> List[Dict[str, Any]]:
-    return store.list_events() or generate_dataset(DEFAULT_DATASET_SIZE, 42)
+    raise HTTPException(status_code=410, detail="Legacy event API is disabled. Use /api/datasets and its event routes.")
 
 
 @app.get("/api/events/{event_id}")
 def get_event(event_id: str) -> Dict[str, Any]:
-    event = store.get_event(event_id)
-    if event:
-        return event
-    dataset = generate_dataset(DEFAULT_DATASET_SIZE, 42)
-    match = next((item for item in dataset if item["event_id"] == event_id), None)
-    if match:
-        store.save_event(match)
-        return match
-    raise HTTPException(status_code=404, detail="Event not found.")
+    raise HTTPException(status_code=410, detail="Legacy event API is disabled. Use /api/datasets/{dataset_id}/events.")
 
 
 @app.post("/api/events/generate")
 def generate_events(payload: Dict[str, Any]) -> Dict[str, Any]:
-    size = int(payload.get("size", DEFAULT_DATASET_SIZE))
-    seed = int(payload.get("seed", 42))
-    events = generate_dataset(size=size, seed=seed)
-    for event in events:
-        store.save_event(event)
-    universal_log.record_many("security.event.generated", "events_api", events)
-    return {"count": len(events), "seed": seed}
+    raise HTTPException(status_code=410, detail="Legacy event generation is disabled. Create an experiment with POST /api/datasets.")
 
 
 @app.post("/api/corrections")
 def create_correction(payload: Dict[str, Any]) -> Dict[str, Any]:
-    correction = Correction.model_validate(payload)
-    event = store.get_event(correction.event_id)
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-    event[correction.feature] = correction.new_value
-    store.save_event(event)
-    store.log_audit({
-        "timestamp": (correction.timestamp or datetime.now(timezone.utc)).isoformat(),
-        "event_id": correction.event_id,
-        "changed_feature": correction.feature,
-        "old_value": correction.old_value,
-        "new_value": correction.new_value,
-        "affected_decisions": [],
-        "historical_outputs": {},
-        "counterfactual_outputs": {},
-        "recovery_results": [],
-        "verification_results": {},
-        "model_versions": _model_versions(),
-        "llm_explanation": correction.reason,
-    })
-    return {"status": "accepted", "event_id": correction.event_id, "feature": correction.feature}
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy correction API is disabled. Use the dataset correction preview and correction transaction routes.",
+    )
 
 
 @app.post("/api/rewind/analyze")
 def analyze_rewind(payload: Dict[str, Any]) -> Dict[str, Any]:
-    event_id = payload.get("event_id")
-    event = store.get_event(event_id)
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-    corrected_features = payload.get("corrected_features", {})
-    analysis = analyze_correction(event, corrected_features, None)
-    feature_names = list(corrected_features.keys()) if corrected_features else ["asset_criticality"]
-    return {
-        "event_id": event_id,
-        "corrected_features": corrected_features,
-        "decisions": analysis["decisions"],
-        "graph": graph_payload_for_features(feature_names),
-    }
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy rule-based replay is disabled. Use POST /api/datasets/{dataset_id}/preview.",
+    )
 
 
 @app.post("/api/rewind/execute")
 def execute_rewind(payload: Dict[str, Any]) -> Dict[str, Any]:
-    event_id = payload.get("event_id")
-    event = store.get_event(event_id)
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-    corrected_features = payload.get("corrected_features", {})
-    analysis = analyze_correction(event, corrected_features, None)
-    recovery = select_recovery_queue(analysis, corrected_features)
-    verification = deterministic_verifier(event, corrected_features, analysis)
-    if verification["verification"] == "REJECTED":
-        return {"status": "rejected", "verification": verification}
-    for decision in recovery:
-        decision["verification_status"] = verification["verification"]
-    event["rewound"] = True
-    store.save_event(event)
-    audit_record = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "event_id": event_id,
-        "changed_feature": next(iter(corrected_features.keys()), "unknown"),
-        "old_value": next((event.get(feature) for feature in corrected_features if feature in event), ""),
-        "new_value": next(iter(corrected_features.values()), ""),
-        "affected_decisions": [item["decision_id"] for item in analysis["decisions"] if item["affected"]],
-        "historical_outputs": {item["decision_id"]: item["historical_value"] for item in analysis["decisions"]},
-        "counterfactual_outputs": {item["decision_id"]: item["counterfactual_value"] for item in analysis["decisions"]},
-        "recovery_results": recovery,
-        "verification_results": verification,
-        "model_versions": _model_versions(),
-        "llm_explanation": "",
-    }
-    store.log_audit(audit_record)
-    return {"status": "success", "rewound": len(recovery), "recovery": recovery, "verification": verification}
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy recovery is disabled. Use the dataset correction transaction and POST /api/datasets/{dataset_id}/rewind.",
+    )
 
 
 @app.get("/api/decisions/{event_id}")
 def get_decisions(event_id: str) -> List[Dict[str, Any]]:
-    event = store.get_event(event_id)
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-    decisions = []
-    for decision_id in ["D1", "D2", "D3", "D4", "D5"]:
-        historical = event.get("decision_outputs", {}).get(decision_id, "UNKNOWN")
-        decisions.append({"decision_id": decision_id, "decision_type": f"Decision-{decision_id}", "historical_output": historical})
-    return decisions
+    raise HTTPException(status_code=410, detail="Legacy decision API is disabled. Use /api/datasets/{dataset_id}/events/{event_id}.")
 
 
 @app.get("/api/graph/{event_id}")
@@ -695,37 +695,30 @@ def get_graph(event_id: str) -> Dict[str, Any]:
 
 
 @app.post("/api/ai/explain")
-def ai_explain(payload: ExplainRequest) -> Dict[str, Any]:
-    evidence = {
-        "corrected_feature": payload.correction.feature,
-        "old_value": payload.correction.old_value,
-        "new_value": payload.correction.new_value,
-        "decision_id": payload.analysis.get("decisions", [{}])[0].get("decision_id", "D4"),
-        "historical_value": payload.analysis.get("decisions", [{}])[0].get("historical_value", "MONITOR"),
-        "counterfactual_value": payload.analysis.get("decisions", [{}])[0].get("counterfactual_value", "ESCALATE"),
-        "recent_universal_log": universal_log.recent_for_ai(),
-    }
-    response = llm.explain("Why was D4 rewound?", evidence)
-    universal_log.record(
-        "llm.model_output",
-        "ai_explain",
-        {"model": response["source"], "question": "Why was D4 rewound?", "answer": response["answer"]},
+def ai_explain() -> Dict[str, Any]:
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy explanation payload is disabled. Use POST /api/ai/chat with dataset_id, event_id, and optional correction_id.",
     )
-    return response
 
 
 @app.post("/api/ai/chat")
 def ai_chat(payload: AIChatRequest) -> Dict[str, Any]:
     if not payload.question.strip():
         raise HTTPException(status_code=422, detail="Enter a question.")
-    evidence = dict(payload.evidence)
-    if payload.event_id:
-        evidence["event_id"] = payload.event_id
-        if "event" not in evidence:
-            event = store.get_event(payload.event_id)
-            if event:
-                evidence["event"] = event
-    evidence["universal_log_context"] = universal_log.context_for_ai(payload.question)
+    try:
+        evidence = build_llm_evidence(
+            question=payload.question,
+            dataset_store=dataset_store,
+            universal_log=universal_log,
+            dataset_id=payload.dataset_id,
+            experiment_id=payload.experiment_id,
+            event_id=payload.event_id,
+            correction_id=payload.correction_id,
+            decision_id=payload.decision_id,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
     try:
         response = llm.explain(payload.question, evidence)
     except RuntimeError as error:
@@ -749,25 +742,10 @@ def ai_status() -> Dict[str, Any]:
 
 @app.post("/api/experiments/run")
 def run_experiment(payload: Dict[str, Any]) -> Dict[str, Any]:
-    size = int(payload.get("size", DEFAULT_DATASET_SIZE))
-    fault_type = payload.get("fault_type", "categorical")
-    seed = int(payload.get("seed", 42))
-    events = generate_dataset(size=size, seed=seed)
-    universal_log.record_many("security.event.generated", "experiment", events)
-    stats = {
-        "size": len(events),
-        "fault_type": fault_type,
-        "affected_decision_precision": 1.0,
-        "affected_decision_recall": 1.0,
-        "counterfactual_accuracy": 1.0,
-        "recovery_success": 1.0,
-        "recovery_cost": 0.4,
-        "latency": 0.12,
-        "collateral_impact": 0.13,
-        "residual_decision_damage": 0.08,
-        "verification_failure_rate": 0.01,
-    }
-    return {"experiment": {"seed": seed, "fault_type": fault_type, "result": stats}}
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy synthetic metrics are disabled. Use /api/datasets to create a pinned-model experiment.",
+    )
 
 
 @app.get("/api/audit")
@@ -777,9 +755,24 @@ def list_audit() -> List[Dict[str, Any]]:
 
 @app.get("/api/metrics")
 def get_metrics() -> Dict[str, Any]:
+    model = dataset_store.get_active_model()
     active = dataset_store.get_active_dataset()
+    latest_verification = "NOT_AVAILABLE"
+    if active:
+        for record in dataset_store.list_audit(active["dataset_id"], limit=100):
+            if record["operation"] == "VERIFIED":
+                latest_verification = record["details"].get("verification", "VERIFIED")
+                break
+            if record["operation"] == "VERIFICATION_REJECTED":
+                latest_verification = "REJECTED"
+                break
     return {
-        "datasets": {"clean": 20_000, "corrupted": 20_000, "active_experiment": active["record_count"] if active else 0},
+        "datasets": {
+            "training": model["training_record_count"] if model else None,
+            "active_experiment": active["record_count"] if active else None,
+        },
         "decision_count": 5,
-        "verification_status": "VERIFIED",
+        "training_model_version": model["model_version"] if model else None,
+        "training_validation_metrics": model["validation_metrics"] if model else None,
+        "verification_status": latest_verification,
     }

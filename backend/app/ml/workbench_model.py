@@ -201,5 +201,13 @@ def predict_workbench_decisions(
     return result
 
 
-def load_workbench_model(model_path: str | Path) -> Dict[str, Any]:
-    return joblib.load(model_path)
+def load_workbench_model(
+    model_path: str | Path,
+    expected_sha256: str | None = None,
+) -> Dict[str, Any]:
+    path = Path(model_path)
+    if expected_sha256 is not None:
+        actual_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual_sha256 != expected_sha256:
+            raise ValueError("Pinned model artifact failed its SHA-256 integrity check.")
+    return joblib.load(path)

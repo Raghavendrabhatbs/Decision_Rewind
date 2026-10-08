@@ -139,6 +139,35 @@ type AuditRecord = {
   timestamp: string;
 };
 
+type AIReasoningLogEvent = {
+  id: string;
+  timestamp: string;
+  event_type: string;
+  source: string;
+  details: Record<string, unknown>;
+};
+
+type AIReasoningEvidence = {
+  experiment: Record<string, unknown> | null;
+  event: { event_id: string } | null;
+  correction: { correction_id: string; status: string } | null;
+  decisions: {
+    historical: Record<string, string>;
+    current: Record<string, string>;
+    counterfactual: Record<string, string | null>;
+  } | null;
+  affected_decisions: string[];
+  provenance: { nodes: Array<{ id: string; kind: string }>; edges: Array<{ source: string; target: string }> } | null;
+  recovery: Record<string, unknown> | null;
+  verification: Record<string, unknown> | null;
+  universal_log_context: {
+    event_count: number;
+    returned_event_count: number;
+    truncated: boolean;
+    events: AIReasoningLogEvent[];
+  };
+};
+
 function auditLabel(value: string): string {
   return value
     .replace(/_/g, ' ')
@@ -292,6 +321,7 @@ export default function App() {
   const [audit, setAudit] = useState<AuditRecord[]>([]);
   const [aiAnswer, setAiAnswer] = useState('');
   const [aiSource, setAiSource] = useState('');
+  const [aiEvidence, setAiEvidence] = useState<AIReasoningEvidence | null>(null);
   const [aiError, setAiError] = useState('');
   const [aiQuestion, setAiQuestion] = useState('Why would this correction affect these decisions?');
   const [visibleFeatures, setVisibleFeatures] = useState<string[]>(FEATURE_COLUMNS.map((column) => column.key));
@@ -312,6 +342,7 @@ export default function App() {
     setRewindResult(null);
     setAiAnswer('');
     setAiSource('');
+    setAiEvidence(null);
     setAiError('');
   }, []);
 
@@ -669,6 +700,7 @@ export default function App() {
     setMessage('');
     setAiAnswer('');
     setAiSource('');
+    setAiEvidence(null);
     setAiError('');
   };
 
@@ -751,6 +783,7 @@ export default function App() {
     setMessage('');
     setAiAnswer('');
     setAiSource('');
+    setAiEvidence(null);
     setAiError('');
     try {
       const result = await requestJson<PreviewResult>(`${API_BASE}/api/datasets/${dataset.dataset_id}/preview`, {
@@ -884,36 +917,23 @@ export default function App() {
     setError('');
     setAiAnswer('');
     setAiSource('');
+    setAiEvidence(null);
     setAiError('');
     try {
-      const result = await requestJson<{ answer: string; source: string }>(`${API_BASE}/api/ai/chat`, {
+      const result = await requestJson<{ answer: string; source: string; evidence: AIReasoningEvidence }>(`${API_BASE}/api/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           question: aiQuestion.trim(),
+          dataset_id: dataset?.dataset_id,
+          experiment_id: dataset?.experiment_id,
           event_id: selectedEvent?.event_id,
-          evidence: {
-            experiment_id: dataset?.experiment_id,
-            model_id: dataset?.model_id,
-            model_version: dataset?.model_version,
-            selected_event: selectedEvent ? {
-              event_id: selectedEvent.event_id,
-              features: Object.fromEntries(
-                EDITABLE_FEATURES.map((feature) => [feature, selectedEvent[feature]]),
-              ),
-              decisions: details?.decisions.map((decision) => ({
-                decision_id: decision.decision_id,
-                historical_output: decision.historical_output,
-                current_output: decision.current_output,
-              })),
-            } : undefined,
-            changes: preview?.changes ?? changedValues,
-            affected_decisions: preview?.affected_decisions.map((item) => item.decision_id) ?? [],
-          },
+          correction_id: correctionId || undefined,
         }),
       });
       setAiAnswer(result.answer);
       setAiSource(result.source);
+      setAiEvidence(result.evidence);
     } catch (cause) {
       setAiError(cause instanceof Error ? cause.message : 'Could not get reasoning.');
     } finally {
@@ -1270,6 +1290,7 @@ export default function App() {
                   setAiError('');
                   setAiAnswer('');
                   setAiSource('');
+                  setAiEvidence(null);
                 }}
                 onKeyDown={(event) => { if (event.key === 'Enter') void askAi(); }}
               />
@@ -1278,6 +1299,41 @@ export default function App() {
             {aiError && <p className="workbench-error" role="alert">{aiError}</p>}
             <p className="ai-answer">{aiAnswer || 'Ask about decisions, experiments, or application history and logs.'}</p>
             {aiSource && <small className="ai-source">Answered by {aiSource}</small>}
+            {aiEvidence && (
+              <div className="ai-evidence">
+                <strong>Evidence used</strong>
+                <ul>
+                  <li>Database state: {aiEvidence.event ? 'event loaded' : aiEvidence.experiment ? 'experiment loaded' : 'not available'}</li>
+                  <li>Counterfactual replay: {aiEvidence.decisions ? 'available' : 'not available'}</li>
+                  <li>Provenance: {aiEvidence.provenance ? 'available' : 'not available'}</li>
+                  <li>Recovery: {aiEvidence.recovery ? 'available' : 'not available'}</li>
+                  <li>Verification: {aiEvidence.verification ? 'available' : 'not available'}</li>
+                  <li>
+                    Universal Logs: {aiEvidence.universal_log_context.returned_event_count} of {aiEvidence.universal_log_context.event_count} events
+                    {aiEvidence.universal_log_context.truncated ? ' (partial context)' : ''}
+                  </li>
+                </ul>
+                {aiEvidence.universal_log_context.events.length > 0 && (
+                  <div className="ai-log-evidence">
+                    {aiEvidence.universal_log_context.events.slice(-6).map((logEvent) => {
+                      const message = logEvent.details.message;
+                      const operation = logEvent.details.operation;
+                      const correlationId = logEvent.details.correlation_id;
+                      return (
+                        <div className="ai-log-item" key={logEvent.id}>
+                          <small>
+                            {formatDate(logEvent.timestamp)} · {logEvent.event_type}
+                            {typeof operation === 'string' ? ` · ${operation}` : ''}
+                            {typeof correlationId === 'string' ? ` · ${correlationId}` : ''}
+                          </small>
+                          <span>{typeof message === 'string' ? message : logEvent.source}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </section>
           <section className="panel audit-panel" id="audit">
             <div className="audit-heading">
