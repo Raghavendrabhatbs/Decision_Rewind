@@ -11,12 +11,11 @@ from backend.app.services.dataset_store import DatasetStore
 
 def _trained_store(tmp_path, monkeypatch):
     monkeypatch.setattr(workbench_model, "TRAINING_RECORD_COUNT", 200)
-    monkeypatch.setattr(workbench_model, "TRAINING_EPOCHS", 2)
-    monkeypatch.setattr(workbench_model, "MODEL_DIR", tmp_path / "models")
+        monkeypatch.setattr(workbench_model, "MODEL_DIR", tmp_path / "models")
     monkeypatch.setattr(workbench_model, "DATA_DIR", tmp_path / "data")
     dataset_store = DatasetStore(tmp_path / "workbench.db")
     events = generate_dataset(size=200, seed=7, include_demo_event=False)
-    dataset_store.create_training_job("JOB-TEST", "V1", "TRN-TEST", 7, 200, 2)
+    dataset_store.create_training_job("JOB-TEST", "V1", "TRN-TEST", 7, 200, workbench_model.TRAINING_EPOCHS)
     training = train_model_version("TRN-TEST", 7, events, "V1", lambda *_: None)
     dataset_store.complete_training_job("JOB-TEST", training)
     model = dataset_store.get_active_model()
@@ -45,9 +44,8 @@ def test_dataset_generation_has_200_new_non_demo_records():
     assert all("decision_outputs" not in item for item in unlabeled)
 
 
-def test_global_training_runs_each_epoch_and_saves_immutable_best_checkpoint(tmp_path, monkeypatch):
+def test_global_training_fits_each_decision_model_and_saves_immutable_artifact(tmp_path, monkeypatch):
     monkeypatch.setattr(workbench_model, "TRAINING_RECORD_COUNT", 200)
-    monkeypatch.setattr(workbench_model, "TRAINING_EPOCHS", 100)
     monkeypatch.setattr(workbench_model, "MODEL_DIR", tmp_path / "models")
     monkeypatch.setattr(workbench_model, "DATA_DIR", tmp_path / "data")
     events = generate_dataset(size=200, seed=7, include_demo_event=False)
@@ -56,10 +54,15 @@ def test_global_training_runs_each_epoch_and_saves_immutable_best_checkpoint(tmp
     training = train_model_version("TRN-EPOCHS", 7, events, "V1", lambda *args: progress.append(args))
 
     assert training["training_record_count"] == len(events)
-    assert workbench_model.TRAINING_EPOCHS == 100
-    assert len(progress) == 5 * 100
+    assert workbench_model.TRAINING_EPOCHS == 1
+    assert len(progress) == 5
     assert set(training["best_epoch"]) == {"D1", "D2", "D3", "D4", "D5"}
-    assert all(1 <= epoch <= 100 for epoch in training["best_epoch"].values())
+    assert set(training["algorithms"]) == {"D1", "D2", "D3", "D4", "D5"}
+    assert training["algorithms"]["D1"] == "Logistic Regression"
+    assert training["algorithms"]["D2"] == "Random Forest"
+    assert training["algorithms"]["D3"] == "Decision Tree"
+    assert training["algorithms"]["D4"] == "Logistic Regression"
+    assert training["algorithms"]["D5"] == "Random Forest"
     assert all(0 <= stats["validation_accuracy"] <= 1 for stats in training["validation_metrics"].values())
     model = load_workbench_model(training["artifact_path"])
     artifact_hash = hashlib.sha256(Path(training["artifact_path"]).read_bytes()).hexdigest()
@@ -83,9 +86,7 @@ def test_explicit_training_gates_experiments_and_versions_are_reused(tmp_path, m
     monkeypatch.setattr(main, "dataset_store", training_store)
     monkeypatch.setattr(main, "universal_log", UniversalLog(tmp_path / "universal_log.jsonl"))
     monkeypatch.setattr(main, "TRAINING_RECORD_COUNT", 200)
-    monkeypatch.setattr(main, "TRAINING_EPOCHS", 2)
     monkeypatch.setattr(workbench_model, "TRAINING_RECORD_COUNT", 200)
-    monkeypatch.setattr(workbench_model, "TRAINING_EPOCHS", 2)
     monkeypatch.setattr(workbench_model, "MODEL_DIR", tmp_path / "models")
     monkeypatch.setattr(workbench_model, "DATA_DIR", tmp_path / "data")
 
@@ -97,7 +98,7 @@ def test_explicit_training_gates_experiments_and_versions_are_reused(tmp_path, m
         first_status = client.get(f"/api/models/training/{first_job['job_id']}").json()
         assert first_status["status"] == "COMPLETED"
         assert first_status["record_count"] == 200
-        assert first_status["epochs"] == 2
+        assert first_status["epochs"] == 1
 
         first_experiment = client.post("/api/datasets").json()
         assert first_experiment["training_status"] == "NOT_TRAINED"
@@ -223,7 +224,7 @@ def test_retraining_creates_new_version_without_overwriting_model_or_experiment(
     first_model = dataset_store.get_active_model()
     assert first_model is not None
 
-    dataset_store.create_training_job("JOB-V2", "V2", "TRN-V2", 8, 200, 2)
+    dataset_store.create_training_job("JOB-V2", "V2", "TRN-V2", 8, 200, workbench_model.TRAINING_EPOCHS)
     second = train_model_version("TRN-V2", 8, events, "V2", lambda *_: None)
     first_artifact_hash = first_model["artifact_sha256"]
     dataset_store.complete_training_job("JOB-V2", second)
