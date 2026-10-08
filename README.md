@@ -71,7 +71,7 @@ To regenerate data:
 
 This produces a deterministic synthetic cybersecurity dataset of 20,000 events, plus demo event SEC-000123 and the final clean/corrupted outputs. This standalone generation command does not train models.
 
-The Dataset Workbench separates global model training from experiments. **Train Global Model** generates and persists a separate 20,000-record training dataset, then explicitly fits D1–D5 classifiers for 100 actual epochs. Each epoch reports training and validation loss/accuracy; the best validation-loss checkpoint for each decision is saved. Training is asynchronous and its progress, dataset ID, seed, metrics, model version, timestamp, and artifact checksum are persisted. Retraining creates a new version while retaining prior models and experiments.
+The Dataset Workbench separates global model training from experiments. **Train Global Model** generates and persists a separate 20,000-record training dataset, then fits five decision-specific classical ML classifiers. D1 and D4 use Logistic Regression, D2 and D5 use Random Forest, and D3 uses a Decision Tree. These estimators are fitted once per model; they are not neural-network epoch models. Training reports validation/training accuracy and log loss for each decision and stores the versioned frozen artifact. Training is asynchronous and its progress, dataset ID, seed, metrics, model version, timestamp, and artifact checksum are persisted. Retraining creates a new version while retaining prior models and experiments.
 
 Only after a global model has been trained can the user generate an exactly 200-record experiment. Generation stores feature records without D1–D5 decision labels. The user must explicitly click **Train Experiment** to label all 200 rows through inference with the frozen model version pinned to that experiment; this action does not fit or update model weights. The app stores the experiment's model version and training dataset ID so replay is reproducible. Counterfactual preview and rewind use that same frozen artifact and remain disabled until labeling succeeds.
 
@@ -81,13 +81,13 @@ The workbench supports searching, sorting, pagination (20 records per page), sel
 
 The decision models are trained from the clean dataset and intentionally keep five decision families distinct:
 
-- D1: Authentication Decision
-- D2: Threat Severity Decision
-- D3: Asset Protection Decision
-- D4: Incident Escalation Decision
-- D5: Response Action Decision
+- D1: Authentication Decision — **Logistic Regression**
+- D2: Threat Severity Decision — **Random Forest**
+- D3: Asset Protection Decision — **Decision Tree**
+- D4: Incident Escalation Decision — **Logistic Regression**
+- D5: Response Action Decision — **Random Forest**
 
-Model metadata and outputs are stored in SQLite and versioned joblib artifacts under `backend/app/ml/trained/versions`; training datasets are persisted under `data/training/`. The API exposes `/api/models/status`, `/api/models/train`, and `/api/models/training/{job_id}` for model status, explicit training/retraining, and live epoch progress.
+Model metadata and outputs are stored in SQLite and versioned joblib artifacts under `backend/app/ml/trained/versions`; training datasets are persisted under `data/training/`. The API exposes `/api/models/status`, `/api/models/train`, and `/api/models/training/{job_id}` for model status, explicit training/retraining, and fitting progress.
 
 The provenance panel loads the active experiment's persisted feature → decision → output graph when the dataset opens; correction previews temporarily narrow the graph to the proposed feature paths. The AI chat accepts general questions with or without a selected experiment. The backend builds evidence from persisted experiment/event/decision state, correction and recovery audits, provenance, and sanitized Universal Logs filtered by question and relevant identifiers. Log context includes whole-history counts, relevant and recent events in chronology, and bounded details; the assistant is told when history is partial. The frontend displays evidence categories and sanitized log entries returned with the answer. Persisted state and deterministic verification remain authoritative; AI can explain but cannot approve or execute recovery. The provider uses the OpenAI SDK Responses API with Groq's OpenAI-compatible endpoint. Copy `.env.example` to `.env`, then set `GROQ_API_KEY` to your Groq API key. `LLM_BASE_URL` defaults to `https://api.groq.com/openai/v1`; `LLM_MODEL` defaults to `openai/gpt-oss-20b`. `TEMPERATURE` and `MAX_TOKENS` control generation. The `/api/ai/status` endpoint reports provider/model configuration without disclosing the key. API errors are surfaced explicitly rather than replaced with fabricated answers.
 
