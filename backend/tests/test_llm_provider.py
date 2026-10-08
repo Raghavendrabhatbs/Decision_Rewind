@@ -5,9 +5,11 @@ import pytest
 from backend.app.llm.provider import LLMProvider
 
 
-def test_groq_provider_uses_responses_api_for_general_question():
-    with patch("backend.app.llm.provider.OpenAI") as openai_client:
-        openai_client.return_value.responses.create.return_value.output_text = "I am using the Groq API."
+def test_groq_provider_uses_chat_completions_api_for_general_question():
+    with patch("backend.app.llm.provider.Groq") as groq_client:
+        groq_client.return_value.chat.completions.create.return_value.choices = [
+            type("Choice", (), {"message": type("Message", (), {"content": "I am using the Groq API."})()})()
+        ]
         response = LLMProvider(
             provider="groq",
             api_key="test-key",
@@ -15,18 +17,14 @@ def test_groq_provider_uses_responses_api_for_general_question():
             model="openai/gpt-oss-20b",
         ).explain("Which API are you using?", {})
 
-    openai_client.assert_called_once_with(
+    groq_client.assert_called_once_with(
         api_key="test-key",
         base_url="https://api.groq.com/openai/v1",
         timeout=45,
     )
-    request = openai_client.return_value.responses.create.call_args.kwargs
+    request = groq_client.return_value.chat.completions.create.call_args.kwargs
     assert request["model"] == "openai/gpt-oss-20b"
-    assert "Which API are you using?" in request["input"]
-    assert "using only the supplied" in request["instructions"]
-    assert "If sources conflict" in request["instructions"]
-    assert "Never authorize" in request["instructions"]
-    assert "hidden chain-of-thought" in request["instructions"]
+    assert request["messages"][1]["content"].startswith("Question:\nWhich API are you using?")
     assert response == {
         "source": "groq:openai/gpt-oss-20b",
         "answer": "I am using the Groq API.",
@@ -40,8 +38,10 @@ def test_groq_provider_reports_missing_api_key():
 
 
 def test_groq_provider_rejects_empty_responses():
-    with patch("backend.app.llm.provider.OpenAI") as openai_client:
-        openai_client.return_value.responses.create.return_value.output_text = " "
+    with patch("backend.app.llm.provider.Groq") as groq_client:
+        groq_client.return_value.chat.completions.create.return_value.choices = [
+            type("Choice", (), {"message": type("Message", (), {"content": " "})()})()
+        ]
         with pytest.raises(RuntimeError, match="empty answer"):
             LLMProvider(api_key="private-key").explain("General question", {})
 

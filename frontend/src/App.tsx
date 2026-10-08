@@ -139,35 +139,6 @@ type AuditRecord = {
   timestamp: string;
 };
 
-type AIReasoningLogEvent = {
-  id: string;
-  timestamp: string;
-  event_type: string;
-  source: string;
-  details: Record<string, unknown>;
-};
-
-type AIReasoningEvidence = {
-  experiment: Record<string, unknown> | null;
-  event: { event_id: string } | null;
-  correction: { correction_id: string; status: string } | null;
-  decisions: {
-    historical: Record<string, string>;
-    current: Record<string, string>;
-    counterfactual: Record<string, string | null>;
-  } | null;
-  affected_decisions: string[];
-  provenance: { nodes: Array<{ id: string; kind: string }>; edges: Array<{ source: string; target: string }> } | null;
-  recovery: Record<string, unknown> | null;
-  verification: Record<string, unknown> | null;
-  universal_log_context: {
-    event_count: number;
-    returned_event_count: number;
-    truncated: boolean;
-    events: AIReasoningLogEvent[];
-  };
-};
-
 function auditLabel(value: string): string {
   return value
     .replace(/_/g, ' ')
@@ -269,6 +240,39 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 const LOGGING_FAILURE_PREFIX = 'Could not save application log';
 
+
+function AiAnswer({ answer }: { answer: string }) {
+  const lines = answer.replace(/\r\n/g, '\n').split('\n');
+
+  const inline = (text: string) => {
+    const parts = text.split(/(\*\*[^*]+\*\*)/g);
+    return parts.map((part, index) =>
+      part.startsWith('**') && part.endsWith('**')
+        ? <strong key={index}>{part.slice(2, -2)}</strong>
+        : <span key={index}>{part}</span>,
+    );
+  };
+
+  return (
+    <div className="ai-answer-content">
+      {lines.map((line, index) => {
+        const trimmed = line.trim();
+        if (!trimmed) return <div className="ai-spacer" key={index} />;
+        if (trimmed.startsWith('## ')) {
+          return <h3 key={index}>{inline(trimmed.slice(3))}</h3>;
+        }
+        if (trimmed.startsWith('- ')) {
+          return <div className="ai-bullet" key={index}><span>•</span><span>{inline(trimmed.slice(2))}</span></div>;
+        }
+        if (/^\d+[.)]\s+/.test(trimmed)) {
+          return <div className="ai-bullet" key={index}><span>•</span><span>{inline(trimmed.replace(/^\d+[.)]\s+/, ''))}</span></div>;
+        }
+        return <p key={index}>{inline(trimmed)}</p>;
+      })}
+    </div>
+  );
+}
+
 function recordFrontendLog(eventType: string, details: Record<string, unknown>, source = 'app') {
   void fetch(`${API_BASE}/api/universal-log/client`, {
     method: 'POST',
@@ -321,7 +325,6 @@ export default function App() {
   const [audit, setAudit] = useState<AuditRecord[]>([]);
   const [aiAnswer, setAiAnswer] = useState('');
   const [aiSource, setAiSource] = useState('');
-  const [aiEvidence, setAiEvidence] = useState<AIReasoningEvidence | null>(null);
   const [aiError, setAiError] = useState('');
   const [aiQuestion, setAiQuestion] = useState('Why would this correction affect these decisions?');
   const [visibleFeatures, setVisibleFeatures] = useState<string[]>(FEATURE_COLUMNS.map((column) => column.key));
@@ -342,7 +345,6 @@ export default function App() {
     setRewindResult(null);
     setAiAnswer('');
     setAiSource('');
-    setAiEvidence(null);
     setAiError('');
   }, []);
 
@@ -514,7 +516,7 @@ export default function App() {
               setError(cause instanceof Error ? cause.message : 'Could not refresh model status.');
             });
             if (job.status === 'FAILED') setError(job.error || 'Model training failed.');
-            else setMessage(`Training complete: SOC-MODEL-${job.model_version} trained on ${job.record_count.toLocaleString()} records for ${job.epochs} epochs.`);
+            else setMessage(`Training complete: SOC-MODEL-${job.model_version} trained on ${job.record_count.toLocaleString()} records in one training pass.`);
           }
         })
         .catch((cause) => {
@@ -700,7 +702,6 @@ export default function App() {
     setMessage('');
     setAiAnswer('');
     setAiSource('');
-    setAiEvidence(null);
     setAiError('');
   };
 
@@ -746,7 +747,7 @@ export default function App() {
       }
       await loadModelStatus();
       if (current.status === 'FAILED') throw new Error(current.error || 'Model training failed.');
-      setMessage(`Training complete: SOC-MODEL-${current.model_version} trained on ${current.record_count.toLocaleString()} records for ${current.epochs} epochs. Generate a new experiment to use this frozen model.`);
+      setMessage(`Training complete: SOC-MODEL-${current.model_version} trained on ${current.record_count.toLocaleString()} records in one training pass. Generate a new experiment to use this frozen model.`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not train the model.');
     } finally {
@@ -783,7 +784,6 @@ export default function App() {
     setMessage('');
     setAiAnswer('');
     setAiSource('');
-    setAiEvidence(null);
     setAiError('');
     try {
       const result = await requestJson<PreviewResult>(`${API_BASE}/api/datasets/${dataset.dataset_id}/preview`, {
@@ -917,23 +917,42 @@ export default function App() {
     setError('');
     setAiAnswer('');
     setAiSource('');
-    setAiEvidence(null);
     setAiError('');
     try {
-      const result = await requestJson<{ answer: string; source: string; evidence: AIReasoningEvidence }>(`${API_BASE}/api/ai/chat`, {
+      const result = await requestJson<{ answer: string; source: string }>(`${API_BASE}/api/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           question: aiQuestion.trim(),
           dataset_id: dataset?.dataset_id,
-          experiment_id: dataset?.experiment_id,
           event_id: selectedEvent?.event_id,
-          correction_id: correctionId || undefined,
+          evidence: {
+            experiment_id: dataset?.experiment_id,
+            model_id: dataset?.model_id,
+            model_version: dataset?.model_version,
+            selected_event: selectedEvent ? {
+              event_id: selectedEvent.event_id,
+              features: Object.fromEntries(
+                EDITABLE_FEATURES.map((feature) => [feature, selectedEvent[feature]]),
+              ),
+              decisions: details?.decisions.map((decision) => ({
+                decision_id: decision.decision_id,
+                historical_output: decision.historical_output,
+                current_output: decision.current_output,
+              })),
+            } : undefined,
+            changes: preview?.changes ?? changedValues,
+            counterfactual_outputs: preview?.counterfactual_outputs,
+            historical_outputs: preview?.historical_outputs,
+            decision_impacts: preview?.decision_impacts,
+            affected_decisions: preview?.affected_decisions.map((item) => item.decision_id) ?? [],
+            unaffected_decisions: preview?.unaffected_decisions.map((item) => item.decision_id) ?? [],
+            dependency_paths: preview?.affected_decisions.flatMap((item) => item.dependency_paths) ?? [],
+          },
         }),
       });
       setAiAnswer(result.answer);
       setAiSource(result.source);
-      setAiEvidence(result.evidence);
     } catch (cause) {
       setAiError(cause instanceof Error ? cause.message : 'Could not get reasoning.');
     } finally {
@@ -1290,50 +1309,14 @@ export default function App() {
                   setAiError('');
                   setAiAnswer('');
                   setAiSource('');
-                  setAiEvidence(null);
                 }}
                 onKeyDown={(event) => { if (event.key === 'Enter') void askAi(); }}
               />
               <button onClick={askAi} disabled={busy || !aiQuestion.trim()}>{busy ? 'THINKING…' : 'ASK'}</button>
             </div>
             {aiError && <p className="workbench-error" role="alert">{aiError}</p>}
-            <p className="ai-answer">{aiAnswer || 'Ask about decisions, experiments, or application history and logs.'}</p>
+            <div className="ai-answer">{aiAnswer ? <AiAnswer answer={aiAnswer} /> : <p className="ai-placeholder">Ask about the correction, affected decisions, provenance, or evidence.</p>}</div>
             {aiSource && <small className="ai-source">Answered by {aiSource}</small>}
-            {aiEvidence && (
-              <div className="ai-evidence">
-                <strong>Evidence used</strong>
-                <ul>
-                  <li>Database state: {aiEvidence.event ? 'event loaded' : aiEvidence.experiment ? 'experiment loaded' : 'not available'}</li>
-                  <li>Counterfactual replay: {aiEvidence.decisions ? 'available' : 'not available'}</li>
-                  <li>Provenance: {aiEvidence.provenance ? 'available' : 'not available'}</li>
-                  <li>Recovery: {aiEvidence.recovery ? 'available' : 'not available'}</li>
-                  <li>Verification: {aiEvidence.verification ? 'available' : 'not available'}</li>
-                  <li>
-                    Universal Logs: {aiEvidence.universal_log_context.returned_event_count} of {aiEvidence.universal_log_context.event_count} events
-                    {aiEvidence.universal_log_context.truncated ? ' (partial context)' : ''}
-                  </li>
-                </ul>
-                {aiEvidence.universal_log_context.events.length > 0 && (
-                  <div className="ai-log-evidence">
-                    {aiEvidence.universal_log_context.events.slice(-6).map((logEvent) => {
-                      const message = logEvent.details.message;
-                      const operation = logEvent.details.operation;
-                      const correlationId = logEvent.details.correlation_id;
-                      return (
-                        <div className="ai-log-item" key={logEvent.id}>
-                          <small>
-                            {formatDate(logEvent.timestamp)} · {logEvent.event_type}
-                            {typeof operation === 'string' ? ` · ${operation}` : ''}
-                            {typeof correlationId === 'string' ? ` · ${correlationId}` : ''}
-                          </small>
-                          <span>{typeof message === 'string' ? message : logEvent.source}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
           </section>
           <section className="panel audit-panel" id="audit">
             <div className="audit-heading">

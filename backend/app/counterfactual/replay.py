@@ -16,7 +16,22 @@ class CounterfactualReplay:
         for key, value in corrected_features.items():
             dataset_event[key] = value
         historical = event.get("decision_outputs", {})
-        counterfactual = build_rule_decisions(dataset_event)
+        if self.registry is not None:
+            # Counterfactual replay re-executes the existing trained models on
+            # corrected historical input. It does not retrain any model. D2 is
+            # computed first because D4/D5 depend on its severity.
+            counterfactual = {}
+            counterfactual["D1"] = self.registry.predict(dataset_event, "D1")
+            counterfactual["D2"] = self.registry.predict(dataset_event, "D2")
+            dataset_event["d2_severity"] = counterfactual["D2"]
+            dataset_event["d2_severity_score"] = {
+                "LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3
+            }.get(counterfactual["D2"], 0)
+            for decision_id in ("D3", "D4", "D5"):
+                counterfactual[decision_id] = self.registry.predict(dataset_event, decision_id)
+        else:
+            # Legacy fallback used only by the older non-dataset endpoint.
+            counterfactual = build_rule_decisions(dataset_event)
         decisions = []
         for decision_id in ["D1", "D2", "D3", "D4", "D5"]:
             reachable = any(

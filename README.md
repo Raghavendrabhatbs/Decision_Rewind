@@ -89,7 +89,7 @@ The decision models are trained from the clean dataset and intentionally keep fi
 
 Model metadata and outputs are stored in SQLite and versioned joblib artifacts under `backend/app/ml/trained/versions`; training datasets are persisted under `data/training/`. The API exposes `/api/models/status`, `/api/models/train`, and `/api/models/training/{job_id}` for model status, explicit training/retraining, and live epoch progress.
 
-The provenance panel loads the active experiment's persisted feature → decision → output graph when the dataset opens; correction previews temporarily narrow the graph to the proposed feature paths. The AI chat accepts general questions with or without a selected experiment. The backend builds evidence from persisted experiment/event/decision state, correction and recovery audits, provenance, and sanitized Universal Logs filtered by question and relevant identifiers. Log context includes whole-history counts, relevant and recent events in chronology, and bounded details; the assistant is told when history is partial. The frontend displays evidence categories and sanitized log entries returned with the answer. Persisted state and deterministic verification remain authoritative; AI can explain but cannot approve or execute recovery. The provider uses the OpenAI SDK Responses API with Groq's OpenAI-compatible endpoint. Copy `.env.example` to `.env`, then set `GROQ_API_KEY` to your Groq API key. `LLM_BASE_URL` defaults to `https://api.groq.com/openai/v1`; `LLM_MODEL` defaults to `openai/gpt-oss-20b`. `TEMPERATURE` and `MAX_TOKENS` control generation. The `/api/ai/status` endpoint reports provider/model configuration without disclosing the key. API errors are surfaced explicitly rather than replaced with fabricated answers.
+The provenance panel loads the active experiment's persisted feature → decision → output graph when the dataset opens; correction previews temporarily narrow the graph to the proposed feature paths. The AI chat accepts general questions with or without a selected experiment, searches the complete universal-log history for question-relevant events, and receives whole-history event/source counts plus recent events. Relevant log details are bounded to fit the model context; the AI reports when details were omitted. It uses Groq chat completions directly. Copy `.env.example` to `.env`, then set `GROQ_API_KEY` to your Groq API key. `LLM_BASE_URL` defaults to `https://api.groq.com/openai/v1`; `LLM_MODEL` defaults to `openai/gpt-oss-20b`. `TEMPERATURE` and `MAX_TOKENS` control generation. The `/api/ai/status` endpoint reports provider/model configuration without disclosing the key. API errors are surfaced explicitly rather than replaced with fabricated answers.
 
 ## Running the application
 
@@ -111,24 +111,22 @@ A complete demo flow is:
 
 ## API documentation
 
-The canonical workbench API includes:
+The backend exposes endpoints including:
 
 - GET /api/health
-- GET /api/models/status
-- POST /api/models/train
-- GET /api/models/training/{job_id}
-- POST /api/datasets
-- POST /api/datasets/{dataset_id}/train
-- GET /api/datasets/{dataset_id}/events
-- GET /api/datasets/{dataset_id}/events/{event_id}
-- POST /api/datasets/{dataset_id}/preview
-- POST /api/datasets/{dataset_id}/corrections
-- POST /api/datasets/{dataset_id}/rewind
+- GET /api/events
+- GET /api/events/{event_id}
+- POST /api/events/generate
+- POST /api/corrections
+- POST /api/rewind/analyze
+- POST /api/rewind/execute
+- GET /api/decisions/{event_id}
+- GET /api/graph/{event_id}
+- POST /api/ai/explain
 - POST /api/ai/chat
-- GET /api/datasets/{dataset_id}/audit
+- POST /api/experiments/run
+- GET /api/audit
 - GET /api/metrics
-
-Legacy event, rule-replay, correction, recovery, explanation, and synthetic-metrics endpoints return HTTP 410 and direct callers to the canonical workbench instead of modifying state or fabricating results. `/api/metrics` reports persisted training metrics and actual verification status; unavailable results are reported as `NOT_AVAILABLE`.
 
 ## LLM configuration
 
@@ -137,7 +135,7 @@ Copy `.env.example` to `.env` and set the environment variables:
 - LLM_PROVIDER=groq
 - LLM_BASE_URL=https://api.groq.com/openai/v1
 - GROQ_API_KEY=your-groq-api-key
-- LLM_MODEL=openai/gpt-oss-20b
+- LLM_MODEL=openai/gpt-oss-120b
 
 Do not commit `.env` or share the API key. If no API key is configured, AI chat reports that it is unavailable; other application functionality remains available.
 

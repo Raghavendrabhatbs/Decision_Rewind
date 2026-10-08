@@ -59,14 +59,21 @@ class ModelRegistry:
         return labels
 
     def _make_model(self, decision_type: str):
-        if decision_type in {"D1", "D3", "D4"}:
+        # Authoritative Decision Rewind algorithms:
+        # D1 Logistic Regression, D2 Random Forest, D3 Decision Tree,
+        # D4 Logistic Regression, D5 Random Forest.
+        if decision_type in {"D1", "D4"}:
             return Pipeline([
                 ("scaler", StandardScaler()),
-                ("model", LogisticRegression(max_iter=2000, multi_class="auto"))
+                ("model", LogisticRegression(max_iter=2000, random_state=self.seed)),
             ])
-        if decision_type == "D2":
+        if decision_type in {"D2", "D5"}:
+            return RandomForestClassifier(
+                n_estimators=200, random_state=self.seed, max_depth=8, n_jobs=-1
+            )
+        if decision_type == "D3":
             return DecisionTreeClassifier(max_depth=5, random_state=self.seed)
-        return RandomForestClassifier(n_estimators=200, random_state=self.seed, max_depth=8)
+        raise ValueError(f"Unknown decision type: {decision_type}")
 
     def train_all(self) -> Dict[str, ModelBundle]:
         for decision_type in ["D1", "D2", "D3", "D4", "D5"]:
@@ -89,7 +96,7 @@ class ModelRegistry:
                 name=decision_type,
                 version=version,
                 model=model,
-                feature_names=["f1", "f2", "f3", "f4"],
+                feature_names=["f1", "f2", "f3", "f4"][:len(X[0])],
                 training_seed=self.seed,
                 train_version="clean-v1",
             )
@@ -111,6 +118,11 @@ class ModelRegistry:
                 "feature_names": bundle.feature_names,
                 "training_seed": bundle.training_seed,
                 "train_version": bundle.train_version,
+                "algorithm": (
+                    "Logistic Regression" if bundle.name in {"D1", "D4"}
+                    else "Random Forest" if bundle.name in {"D2", "D5"}
+                    else "Decision Tree"
+                ),
             }
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
         (MODEL_DIR / "model_registry.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")

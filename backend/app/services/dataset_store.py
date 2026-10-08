@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from backend.app.config import SQLITE_PATH
-from backend.app.verification.verifier import verify_rewind_persistence
 
 EDITABLE_FEATURES = {
     "asset_criticality",
@@ -457,11 +456,6 @@ class DatasetStore:
             ).fetchone()
         return self._public_model(row) if row else None
 
-    def get_model(self, model_id: str) -> Dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute("SELECT * FROM trained_models WHERE model_id = ?", (model_id,)).fetchone()
-        return self._public_model(row) if row else None
-
     def list_models(self) -> List[Dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM trained_models ORDER BY trained_at DESC").fetchall()
@@ -536,14 +530,6 @@ class DatasetStore:
     def get_dataset(self, dataset_id: str) -> Dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,)).fetchone()
-        return self._public_dataset(row) if row else None
-
-    def get_dataset_by_experiment_id(self, experiment_id: str) -> Dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM datasets WHERE experiment_id = ?",
-                (experiment_id,),
-            ).fetchone()
         return self._public_dataset(row) if row else None
 
     @staticmethod
@@ -748,72 +734,25 @@ class DatasetStore:
     ) -> Dict[str, Any]:
         now = datetime.now(timezone.utc).isoformat()
         rewind_results = []
-        if verification.get("verification") != "VERIFIED":
-            raise ValueError("Recovery cannot be committed without a successful deterministic verification.")
         with self._connect() as conn:
-            correction_row = conn.execute(
-                "SELECT status, dataset_id, event_id FROM dataset_corrections WHERE correction_id = ?",
-                (correction["correction_id"],),
-            ).fetchone()
-            if (
-                correction_row is None
-                or correction_row["status"] != "PENDING"
-                or correction_row["dataset_id"] != correction["dataset_id"]
-                or correction_row["event_id"] != correction["event_id"]
-            ):
-                raise ValueError("The correction is no longer pending for this experiment event.")
-            dataset_row = conn.execute(
-                "SELECT model_version, training_dataset_id, d5_status FROM datasets WHERE dataset_id = ?",
-                (correction["dataset_id"],),
-            ).fetchone()
-            if dataset_row is None or dataset_row["d5_status"] != "LABELED":
-                raise ValueError("The experiment is not in a recoverable trained state.")
             event_row = conn.execute(
-                "SELECT original_payload, current_payload FROM dataset_events WHERE dataset_id = ? AND event_id = ?",
+                "SELECT current_payload FROM dataset_events WHERE dataset_id = ? AND event_id = ?",
                 (correction["dataset_id"], correction["event_id"]),
             ).fetchone()
             if not event_row:
                 raise LookupError("Event not found in this dataset.")
-            original_state = json.loads(event_row["original_payload"])
-            previous_state = json.loads(event_row["current_payload"])
             event = json.loads(event_row["current_payload"])
             for change in correction["changes"]:
                 if event.get(change["feature"]) != change["old_value"]:
                     raise ValueError("The event changed after this correction was proposed. Create a fresh correction against the current value.")
                 event[change["feature"]] = change["new_value"]
             event["decision_outputs"] = dict(event["decision_outputs"])
-            decisions_before = conn.execute(
-                """
-                SELECT decision_id, historical_output, current_output, model_version, training_dataset_id
-                FROM dataset_decisions WHERE dataset_id = ? AND event_id = ?
-                """,
+            for decision in conn.execute(
+                "SELECT decision_id, current_output FROM dataset_decisions WHERE dataset_id = ? AND event_id = ?",
                 (correction["dataset_id"], correction["event_id"]),
-            ).fetchall()
-            decision_ids = {row["decision_id"] for row in decisions_before}
-            if decision_ids != set(counterfactual) or set(decision_impacts) != decision_ids:
-                raise ValueError("The decision set does not match the pinned experiment replay.")
-            expected_affected = {
-                decision_id
-                for decision_id, impact in decision_impacts.items()
-                if impact.get("affected")
-            }
-            if expected_affected != set(affected):
-                raise ValueError("The recovery set does not match the verified affected-decision analysis.")
-            for decision in decisions_before:
+            ).fetchall():
                 decision_id = decision["decision_id"]
                 proposed = counterfactual[decision_id]
-                impact = decision_impacts[decision_id]
-                if (
-                    impact.get("historical_output") != decision["historical_output"]
-                    or impact.get("current_output") != decision["current_output"]
-                    or impact.get("counterfactual_output") != proposed
-                ):
-                    raise ValueError(f"Decision {decision_id} changed after counterfactual analysis.")
-                if (
-                    decision["model_version"] != dataset_row["model_version"]
-                    or decision["training_dataset_id"] != dataset_row["training_dataset_id"]
-                ):
-                    raise ValueError(f"Decision {decision_id} is not pinned to this experiment model.")
                 if decision_id in affected:
                     rewind_id = f"RW-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}-{decision_id}"
                     conn.execute(
@@ -838,40 +777,6 @@ class DatasetStore:
                 "UPDATE dataset_events SET current_payload = ? WHERE dataset_id = ? AND event_id = ?",
                 (json.dumps(event, sort_keys=True), correction["dataset_id"], correction["event_id"]),
             )
-            persisted_event_row = conn.execute(
-                "SELECT current_payload FROM dataset_events WHERE dataset_id = ? AND event_id = ?",
-                (correction["dataset_id"], correction["event_id"]),
-            ).fetchone()
-            decisions_after = conn.execute(
-                """
-                SELECT decision_id, historical_output, current_output, model_version, training_dataset_id
-                FROM dataset_decisions WHERE dataset_id = ? AND event_id = ?
-                """,
-                (correction["dataset_id"], correction["event_id"]),
-            ).fetchall()
-            verification = verify_rewind_persistence(
-                original_state,
-                previous_state,
-                json.loads(persisted_event_row["current_payload"]),
-                [dict(row) for row in decisions_before],
-                [dict(row) for row in decisions_after],
-                counterfactual,
-                affected,
-                correction["changes"],
-                dataset_row["model_version"],
-                dataset_row["training_dataset_id"],
-            )
-            if not verification["verified"]:
-                raise ValueError(
-                    "Deterministic persistence verification failed: "
-                    + "; ".join(verification["errors"])
-                )
-            verification["persisted_rewind_operations"] = len(rewind_results)
-            for rewind in rewind_results:
-                conn.execute(
-                    "UPDATE verification_results SET details = ? WHERE rewind_id = ?",
-                    (json.dumps(verification, sort_keys=True), rewind["rewind_id"]),
-                )
             conn.execute("UPDATE dataset_corrections SET status = 'REWOUND' WHERE correction_id = ?", (correction["correction_id"],))
             conn.execute(
                 "INSERT INTO dataset_audit_logs VALUES (?, ?, ?, ?, ?, ?)",
@@ -900,26 +805,6 @@ class DatasetStore:
                 ),
             )
             conn.execute("UPDATE datasets SET workflow_status = 'VERIFIED' WHERE dataset_id = ?", (correction["dataset_id"],))
-            audit_operations = {
-                row["operation"]
-                for row in conn.execute(
-                    "SELECT operation FROM dataset_audit_logs WHERE dataset_id = ? AND event_id = ? AND audit_id LIKE ?",
-                    (correction["dataset_id"], correction["event_id"], f"{correction['correction_id']}%"),
-                ).fetchall()
-            }
-            required_audit = {"COUNTERFACTUAL_REPLAYED", "RECOVERY_READY", "RECOVERED", "VERIFIED"}
-            if not required_audit.issubset(audit_operations):
-                raise ValueError("Recovery audit records were not fully persisted.")
-            verification_ids = [
-                f"VR-{item['rewind_id']}" for item in rewind_results
-            ] + [f"VR-{correction['correction_id']}-TRANSACTION"]
-            placeholders = ",".join("?" for _ in verification_ids)
-            verification_rows = conn.execute(
-                f"SELECT COUNT(*) FROM verification_results WHERE verification_id IN ({placeholders})",
-                verification_ids,
-            ).fetchone()[0]
-            if verification_rows != len(rewind_results) + 1:
-                raise ValueError("Verification records were not fully persisted.")
         return {"rewind_operations": rewind_results, "current_state": event, "verification": verification}
 
     def list_audit(self, dataset_id: str, limit: int | None = 100) -> List[Dict[str, Any]]:

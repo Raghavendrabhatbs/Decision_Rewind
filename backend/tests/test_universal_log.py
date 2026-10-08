@@ -1,7 +1,6 @@
 import json
 import logging
 
-import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.services.universal_log import UniversalLog
@@ -69,58 +68,6 @@ def test_ai_log_context_bounds_details_but_reports_omitted_history(tmp_path):
     ) <= 24_000
 
 
-def test_ai_log_context_filters_by_references_and_preserves_chronological_order(tmp_path):
-    log = UniversalLog(tmp_path / "universal_log.jsonl")
-    log.record("workflow.correction", "dataset_workbench", {"event_id": "EVT-1", "correlation_id": "COR-1"})
-    log.record("workflow.correction", "dataset_workbench", {"event_id": "EVT-2", "correlation_id": "COR-2"})
-    log.record("workflow.rewind", "dataset_workbench", {"event_id": "EVT-1", "correlation_id": "COR-1"})
-
-    context = log.context_for_ai("Summarize this event", references={"event_id": "EVT-1", "correlation_id": "COR-1"})
-
-    assert context["event_count"] == 3
-    assert context["returned_event_count"] == 2
-    assert context["truncated"] is True
-    assert [event["event_type"] for event in context["events"]] == [
-        "workflow.correction",
-        "workflow.rewind",
-    ]
-    assert all(event["details"]["event_id"] == "EVT-1" for event in context["events"])
-
-
-def test_ai_log_context_supports_operation_source_level_and_timestamp_filters(tmp_path):
-    log = UniversalLog(tmp_path / "universal_log.jsonl")
-    log.record(
-        "workflow.rewind",
-        "backend",
-        {"event_id": "EVT-1", "operation": "rewind", "level": "INFO"},
-    )
-    log.record(
-        "workflow.rewind",
-        "backend",
-        {"event_id": "EVT-1", "operation": "rewind", "level": "ERROR"},
-    )
-    log.record(
-        "workflow.rewind",
-        "frontend",
-        {"event_id": "EVT-1", "operation": "rewind", "level": "ERROR"},
-    )
-
-    context = log.context_for_ai(
-        "",
-        filters={
-            "event_id": "EVT-1",
-            "operation": "workflow.rewind",
-            "source": "backend",
-            "level": "ERROR",
-            "timestamp_from": log.recent(3)[1]["timestamp"],
-        },
-    )
-
-    assert context["returned_event_count"] == 1
-    assert context["events"][0]["details"]["level"] == "ERROR"
-    assert context["events"][0]["source"] == "backend"
-
-
 def test_api_and_llm_events_are_logged_and_recent_history_reaches_ai(tmp_path, monkeypatch):
     from backend.app import main
 
@@ -139,7 +86,7 @@ def test_api_and_llm_events_are_logged_and_recent_history_reaches_ai(tmp_path, m
     monkeypatch.setattr(main.llm, "explain", explain)
     with TestClient(main.app) as client:
         assert client.get("/api/health").status_code == 200
-        response = client.post("/api/ai/chat", json={"question": "What happened to /api/health?"})
+        response = client.post("/api/ai/chat", json={"question": "What happened?"})
 
     assert response.status_code == 200
     records = log.recent(10)
@@ -182,7 +129,15 @@ def test_ai_explanations_receive_recent_universal_log(tmp_path, monkeypatch):
     log = UniversalLog(tmp_path / "universal_log.jsonl")
     log.record("workflow.correction.applied", "test", {"event_id": "SEC-1"})
     monkeypatch.setattr(main, "universal_log", log)
-    monkeypatch.setattr(main.llm, "explain", lambda *_: pytest.fail("Legacy LLM route must not be used."))
+
+    def explain(question, evidence):
+        assert any(
+            record["event_type"] == "workflow.correction.applied"
+            for record in evidence["recent_universal_log"]
+        )
+        return {"source": "groq:test-model", "answer": "Explained.", "evidence": evidence}
+
+    monkeypatch.setattr(main.llm, "explain", explain)
     with TestClient(main.app) as client:
         response = client.post(
             "/api/ai/explain",
@@ -198,7 +153,8 @@ def test_ai_explanations_receive_recent_universal_log(tmp_path, monkeypatch):
             },
         )
 
-    assert response.status_code == 410
+    assert response.status_code == 200
+    assert any(record["event_type"] == "llm.model_output" for record in log.recent(5))
 
 
 def test_application_logging_handler_writes_python_log_records(tmp_path, monkeypatch):

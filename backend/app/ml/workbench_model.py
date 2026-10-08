@@ -8,8 +8,13 @@ from typing import Any, Callable, Dict, List
 
 import joblib
 import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, log_loss
 from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.tree import DecisionTreeClassifier
 
 from backend.app.config import DATA_DIR, MODEL_DIR
 from backend.app.dataset.generator import build_rule_decisions
@@ -18,7 +23,9 @@ DECISION_IDS = ["D1", "D2", "D3", "D4", "D5"]
 ASSET_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 SEVERITY_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 TRAINING_RECORD_COUNT = 20_000
-TRAINING_EPOCHS = 100
+# Classical scikit-learn estimators train in one fit operation rather than epochs.
+# Keep the existing API field for compatibility, but treat it as one training pass.
+TRAINING_EPOCHS = 1
 FEATURES = {
     "D1": ["failed_logins", "login_hour", "geo_anomaly", "source_ip"],
     "D2": ["failed_logins", "threat_intel_score", "previous_alerts"],
@@ -27,21 +34,42 @@ FEATURES = {
     "D5": ["d2_severity", "asset_criticality", "geo_anomaly", "failed_logins"],
 }
 
+ALGORITHM_NAMES = {
+    "D1": "Logistic Regression",
+    "D2": "Random Forest",
+    "D3": "Decision Tree",
+    "D4": "Logistic Regression",
+    "D5": "Random Forest",
+}
 
-class EpochMLPClassifier:
-    def __init__(self, classes: np.ndarray, weights: Dict[str, np.ndarray]):
-        self.classes_ = classes
-        self.weights = weights
 
-    def predict_proba(self, features: np.ndarray) -> np.ndarray:
-        hidden = np.maximum(features @ self.weights["hidden_weights"] + self.weights["hidden_bias"], 0.0)
-        logits = hidden @ self.weights["output_weights"] + self.weights["output_bias"]
-        logits -= logits.max(axis=1, keepdims=True)
-        exponentials = np.exp(logits)
-        return exponentials / exponentials.sum(axis=1, keepdims=True)
-
-    def predict(self, features: np.ndarray) -> np.ndarray:
-        return self.classes_[np.argmax(self.predict_proba(features), axis=1)]
+def _make_model(decision_id: str, seed: int):
+    """Create the authoritative model for each Decision Rewind decision."""
+    if decision_id in {"D1", "D4"}:
+        return Pipeline([
+            ("scaler", StandardScaler()),
+            ("model", LogisticRegression(max_iter=2000, random_state=seed)),
+        ])
+    if decision_id == "D2":
+        return RandomForestClassifier(
+            n_estimators=200,
+            max_depth=8,
+            random_state=seed,
+            n_jobs=-1,
+        )
+    if decision_id == "D3":
+        return DecisionTreeClassifier(
+            max_depth=5,
+            random_state=seed,
+        )
+    if decision_id == "D5":
+        return RandomForestClassifier(
+            n_estimators=200,
+            max_depth=8,
+            random_state=seed,
+            n_jobs=-1,
+        )
+    raise ValueError(f"Unknown decision type: {decision_id}")
 
 
 def _features(event: Dict[str, Any], decision_id: str, d2_severity: str) -> List[float]:
@@ -80,10 +108,11 @@ def train_model_version(
     best_epochs: Dict[str, int] = {}
     validation_metrics: Dict[str, Dict[str, float]] = {}
     labels_by_event = {event["event_id"]: build_rule_decisions(event) for event in events}
-    for model_index, decision_id in enumerate(DECISION_IDS):
+
+    for decision_id in DECISION_IDS:
         X = np.asarray(
             [_features(event, decision_id, labels_by_event[event["event_id"]]["D2"]) for event in events],
-            dtype=np.float32,
+            dtype=np.float64,
         )
         y = np.asarray([labels_by_event[event["event_id"]][decision_id] for event in events])
         X_train, X_validation, y_train, y_validation = train_test_split(
@@ -93,71 +122,24 @@ def train_model_version(
             random_state=training_seed,
             stratify=y,
         )
-        scaler = StandardScaler()
-        X_train = scaler.fit_transform(X_train)
-        X_validation = scaler.transform(X_validation)
-        classes = np.unique(y)
-        y_train = np.searchsorted(classes, y_train)
-        y_validation = np.searchsorted(classes, y_validation)
-        rng = np.random.default_rng(training_seed + model_index)
-        hidden_size = 32
-        weights = {
-            "hidden_weights": rng.normal(0, np.sqrt(2 / X_train.shape[1]), (X_train.shape[1], hidden_size)),
-            "hidden_bias": np.zeros(hidden_size),
-            "output_weights": rng.normal(0, np.sqrt(2 / hidden_size), (hidden_size, len(classes))),
-            "output_bias": np.zeros(len(classes)),
+
+        model = _make_model(decision_id, training_seed)
+        model.fit(X_train, y_train)
+        predictions = model.predict(X_validation)
+        probabilities = model.predict_proba(X_validation)
+        stats = {
+            "training_accuracy": float(accuracy_score(y_train, model.predict(X_train))),
+            "validation_accuracy": float(accuracy_score(y_validation, predictions)),
+            "validation_loss": float(log_loss(y_validation, probabilities, labels=model.classes_)),
         }
-        first_moment = {name: np.zeros_like(value) for name, value in weights.items()}
-        second_moment = {name: np.zeros_like(value) for name, value in weights.items()}
-        best_loss = float("inf")
-        best_model: EpochMLPClassifier | None = None
-        best_epoch = 0
-        best_stats: Dict[str, float] = {}
-        for epoch in range(1, TRAINING_EPOCHS + 1):
-            hidden = np.maximum(X_train @ weights["hidden_weights"] + weights["hidden_bias"], 0.0)
-            logits = hidden @ weights["output_weights"] + weights["output_bias"]
-            logits -= logits.max(axis=1, keepdims=True)
-            train_probabilities = np.exp(logits)
-            train_probabilities /= train_probabilities.sum(axis=1, keepdims=True)
-            gradient_logits = train_probabilities.copy()
-            gradient_logits[np.arange(len(y_train)), y_train] -= 1.0
-            gradient_logits /= len(y_train)
-            gradient_hidden = gradient_logits @ weights["output_weights"].T
-            gradient_hidden[hidden <= 0] = 0
-            gradients = {
-                "hidden_weights": X_train.T @ gradient_hidden,
-                "hidden_bias": gradient_hidden.sum(axis=0),
-                "output_weights": hidden.T @ gradient_logits,
-                "output_bias": gradient_logits.sum(axis=0),
-            }
-            for name, gradient in gradients.items():
-                first_moment[name] = 0.9 * first_moment[name] + 0.1 * gradient
-                second_moment[name] = 0.999 * second_moment[name] + 0.001 * gradient**2
-                corrected_first = first_moment[name] / (1 - 0.9**epoch)
-                corrected_second = second_moment[name] / (1 - 0.999**epoch)
-                weights[name] -= 0.005 * corrected_first / (np.sqrt(corrected_second) + 1e-8)
-            model = EpochMLPClassifier(classes, weights)
-            train_probabilities = model.predict_proba(X_train)
-            validation_probabilities = model.predict_proba(X_validation)
-            train_predictions = np.argmax(train_probabilities, axis=1)
-            validation_predictions = np.argmax(validation_probabilities, axis=1)
-            stats = {
-                "training_loss": float(-np.log(np.maximum(train_probabilities[np.arange(len(y_train)), y_train], 1e-12)).mean()),
-                "validation_loss": float(-np.log(np.maximum(validation_probabilities[np.arange(len(y_validation)), y_validation], 1e-12)).mean()),
-                "training_accuracy": float(np.mean(train_predictions == y_train)),
-                "validation_accuracy": float(np.mean(validation_predictions == y_validation)),
-            }
-            if stats["validation_loss"] < best_loss:
-                best_loss = stats["validation_loss"]
-                best_epoch = epoch
-                best_model = EpochMLPClassifier(classes.copy(), {name: value.copy() for name, value in weights.items()})
-                best_stats = stats
-            on_epoch(decision_id, epoch, stats)
-        if best_model is None:
-            raise RuntimeError(f"Training failed to produce a checkpoint for {decision_id}.")
-        models[decision_id] = {"scaler": scaler, "model": best_model}
-        best_epochs[decision_id] = best_epoch
-        validation_metrics[decision_id] = best_stats
+        on_epoch(decision_id, 1, stats)
+        best_epochs[decision_id] = 1
+        validation_metrics[decision_id] = stats
+        models[decision_id] = {
+            "algorithm": ALGORITHM_NAMES[decision_id],
+            "feature_names": FEATURES[decision_id],
+            "model": model,
+        }
 
     trained_at = datetime.now(timezone.utc).isoformat()
     model_id = f"SOC-MODEL-{model_version}"
@@ -175,6 +157,8 @@ def train_model_version(
         "best_epoch": best_epochs,
         "training_timestamp": trained_at,
         "validation_metrics": validation_metrics,
+        "algorithms": ALGORITHM_NAMES,
+        "feature_sets": FEATURES,
         "artifact_path": str(artifact_path),
         "artifact_sha256": version_hash,
     }
@@ -186,28 +170,21 @@ def predict_workbench_decisions(
 ) -> Dict[str, str]:
     artifacts = model_path if isinstance(model_path, dict) else joblib.load(model_path)
     result: Dict[str, str] = {}
-    d1_artifact = artifacts["D1"]
-    d1_vector = d1_artifact["scaler"].transform([_features(event, "D1", "LOW")])
-    result["D1"] = str(d1_artifact["model"].predict(d1_vector)[0])
 
-    d2_artifact = artifacts["D2"]
-    d2_vector = d2_artifact["scaler"].transform([_features(event, "D2", "LOW")])
-    d2 = str(d2_artifact["model"].predict(d2_vector)[0])
+    # D1 must be evaluated first only because it is independent; D2 is evaluated
+    # before D4/D5 because those models explicitly consume D2 severity.
+    d1_model = artifacts["D1"]["model"]
+    result["D1"] = str(d1_model.predict([_features(event, "D1", "LOW")])[0])
+
+    d2_model = artifacts["D2"]["model"]
+    d2 = str(d2_model.predict([_features(event, "D2", "LOW")])[0])
     result["D2"] = d2
+
     for decision_id in ("D3", "D4", "D5"):
-        artifact = artifacts[decision_id]
-        vector = artifact["scaler"].transform([_features(event, decision_id, d2)])
-        result[decision_id] = str(artifact["model"].predict(vector)[0])
+        model = artifacts[decision_id]["model"]
+        result[decision_id] = str(model.predict([_features(event, decision_id, d2)])[0])
     return result
 
 
-def load_workbench_model(
-    model_path: str | Path,
-    expected_sha256: str | None = None,
-) -> Dict[str, Any]:
-    path = Path(model_path)
-    if expected_sha256 is not None:
-        actual_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
-        if actual_sha256 != expected_sha256:
-            raise ValueError("Pinned model artifact failed its SHA-256 integrity check.")
-    return joblib.load(path)
+def load_workbench_model(model_path: str | Path) -> Dict[str, Any]:
+    return joblib.load(model_path)

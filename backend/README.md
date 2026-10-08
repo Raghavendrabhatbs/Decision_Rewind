@@ -31,3 +31,16 @@ The log is local application data and is excluded from Git. The backend cannot
 read unrelated VS Code or PowerShell terminal sessions or arbitrary terminal
 stdout; only application logging and activity observed inside this application
 are recorded.
+
+## Authoritative decision algorithms
+
+The frozen model trained by the workbench uses the following algorithms:
+
+- D1 – Authentication: Logistic Regression
+- D2 – Threat Severity: Random Forest
+- D3 – Asset Protection: Decision Tree
+- D4 – Incident Escalation: Logistic Regression
+- D5 – Response Action: Random Forest
+
+The model is fitted once on the 20,000-record training dataset. Counterfactual
+rewind reuses the pinned model artifact; it never retrains the model.
