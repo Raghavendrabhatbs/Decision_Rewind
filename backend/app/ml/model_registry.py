@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
@@ -18,6 +18,15 @@ from backend.app.config import MODEL_DIR
 from backend.app.dataset.generator import DEFAULT_DATASET_SIZE, generate_dataset
 
 
+ALGORITHMS = {
+    "D1": "Logistic Regression",
+    "D2": "Random Forest",
+    "D3": "Decision Tree",
+    "D4": "Logistic Regression",
+    "D5": "Random Forest",
+}
+
+
 @dataclass
 class ModelBundle:
     name: str
@@ -25,6 +34,7 @@ class ModelBundle:
     model: Pipeline | DecisionTreeClassifier | RandomForestClassifier | LogisticRegression
     feature_names: List[str]
     training_seed: int
+    algorithm: str
     train_version: str = "clean-v1"
 
 
@@ -59,14 +69,19 @@ class ModelRegistry:
         return labels
 
     def _make_model(self, decision_type: str):
-        if decision_type in {"D1", "D3", "D4"}:
+        if decision_type in {"D1", "D4"}:
             return Pipeline([
                 ("scaler", StandardScaler()),
-                ("model", LogisticRegression(max_iter=2000, multi_class="auto"))
+                ("model", LogisticRegression(max_iter=2000, random_state=self.seed)),
             ])
-        if decision_type == "D2":
-            return DecisionTreeClassifier(max_depth=5, random_state=self.seed)
-        return RandomForestClassifier(n_estimators=200, random_state=self.seed, max_depth=8)
+        if decision_type in {"D2", "D5"}:
+            return RandomForestClassifier(
+                n_estimators=200,
+                max_depth=8,
+                random_state=self.seed,
+                n_jobs=-1,
+            )
+        return DecisionTreeClassifier(max_depth=8, random_state=self.seed)
 
     def train_all(self) -> Dict[str, ModelBundle]:
         for decision_type in ["D1", "D2", "D3", "D4", "D5"]:
@@ -78,10 +93,13 @@ class ModelRegistry:
                 event_copy["d2_severity_score"] = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}.get(event_copy["d2_severity"], 0)
                 X.append(self._prepare_features(event_copy, decision_type))
                 y.append(event.get("decision_outputs", {}).get(decision_type, "ALLOW"))
+
             model = self._make_model(decision_type)
             X_arr = np.asarray(X, dtype=float)
             y_arr = np.asarray(y)
-            X_train, X_valid, y_train, y_valid = train_test_split(X_arr, y_arr, test_size=0.2, random_state=self.seed, stratify=y_arr)
+            X_train, X_valid, y_train, y_valid = train_test_split(
+                X_arr, y_arr, test_size=0.2, random_state=self.seed, stratify=y_arr
+            )
             model.fit(X_train, y_train)
             score = accuracy_score(y_valid, model.predict(X_valid))
             version = f"{decision_type.lower()}-v{round(score * 100) + 1}"
@@ -89,8 +107,9 @@ class ModelRegistry:
                 name=decision_type,
                 version=version,
                 model=model,
-                feature_names=["f1", "f2", "f3", "f4"],
+                feature_names=[f"f{i}" for i in range(1, X_arr.shape[1] + 1)],
                 training_seed=self.seed,
+                algorithm=ALGORITHMS[decision_type],
                 train_version="clean-v1",
             )
         return self.models
@@ -108,6 +127,7 @@ class ModelRegistry:
             payload[key] = {
                 "name": bundle.name,
                 "version": bundle.version,
+                "algorithm": bundle.algorithm,
                 "feature_names": bundle.feature_names,
                 "training_seed": bundle.training_seed,
                 "train_version": bundle.train_version,
