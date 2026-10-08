@@ -46,8 +46,6 @@ def _query_terms(question: str) -> set[str]:
             word = word[:-1]
         terms.add(word)
     return terms
-
-
 def _key_values(value: Any, key: str) -> list[str]:
     found = []
     if isinstance(value, dict):
