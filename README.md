@@ -21,7 +21,7 @@ The application keeps the AI layer separate from the recovery engine. LLM respon
 - Backend: FastAPI + Pydantic + scikit-learn + NetworkX + SQLite persistence
 - Frontend: React + Vite + TypeScript + Recharts + React Flow
 - Data layer: synthetic cybersecurity datasets generated deterministically with a seed
-- LLM layer: abstraction with deterministic fallback explanations
+- LLM layer: optional Groq-backed explanations grounded in persisted application evidence; unavailable when no API key is configured
 
 ## Repository layout
 
@@ -79,17 +79,27 @@ The workbench supports searching, sorting, pagination (20 records per page), sel
 
 ## Model training
 
-The decision models are trained from the clean dataset and intentionally keep five decision families distinct:
+The workbench creates a 20,000-record synthetic training dataset and fits five separate classifiers using an 80/20 stratified train/validation split. Each estimator is fitted once per model version:
 
-- D1: Authentication Decision
-- D2: Threat Severity Decision
-- D3: Asset Protection Decision
-- D4: Incident Escalation Decision
-- D5: Response Action Decision
+| Decision | Purpose | Classifier |
+|---|---|---|
+| D1 | Authentication | Logistic Regression |
+| D2 | Threat Severity | Random Forest |
+| D3 | Asset Protection | Decision Tree |
+| D4 | Incident Escalation | Logistic Regression |
+| D5 | Response Action | Random Forest |
 
-Model metadata and outputs are stored in SQLite and versioned joblib artifacts under `backend/app/ml/trained/versions`; training datasets are persisted under `data/training/`. The API exposes `/api/models/status`, `/api/models/train`, and `/api/models/training/{job_id}` for model status, explicit training/retraining, and per-model fit progress. For a separate 80/20 evaluation report with accuracy, precision, recall, F1, and confusion matrices, run `py -3.11 -m backend.app.ml.train`; the report is written to the ignored local model metrics directory.
+Training and validation loss and accuracy are recorded for each fit. Model metadata, the training seed and dataset ID, validation metrics, and a SHA-256 checksum are stored with versioned joblib artifacts under `backend/app/ml/trained/versions`; training datasets are persisted under `data/training/`. The API exposes `/api/models/status`, `/api/models/train`, and `/api/models/training/{job_id}` for model status, explicit training/retraining, and per-model fit progress.
 
-The provenance panel loads the active experiment's persisted feature → decision → output graph when the dataset opens; correction previews temporarily narrow the graph to the proposed feature paths. The AI chat accepts general questions with or without a selected experiment. The backend builds evidence from persisted experiment/event/decision state, correction and recovery audits, provenance, and sanitized Universal Logs filtered by question and relevant identifiers. Log context includes whole-history counts, relevant and recent events in chronology, and bounded details; the assistant is told when history is partial. The frontend displays evidence categories and sanitized log entries returned with the answer. Persisted state and deterministic verification remain authoritative; AI can explain but cannot approve or execute recovery. The provider uses the OpenAI SDK Responses API with Groq's OpenAI-compatible endpoint. Copy `.env.example` to `.env`, then set `GROQ_API_KEY` to your Groq API key. `LLM_BASE_URL` defaults to `https://api.groq.com/openai/v1`; `LLM_MODEL` defaults to `openai/gpt-oss-20b`. `TEMPERATURE` and `MAX_TOKENS` control generation. The `/api/ai/status` endpoint reports provider/model configuration without disclosing the key. API errors are surfaced explicitly rather than replaced with fabricated answers.
+For a separate held-out evaluation report, run this from the repository root:
+
+```powershell
+py -3.11 -m backend.app.ml.train
+```
+
+The command trains the same five classifier types on a fresh deterministic 20,000-record dataset with an 80/20 stratified split. It reports training accuracy, held-out accuracy, weighted precision, recall, F1, and confusion matrices for each decision. The JSON report is written to `backend/app/ml/trained/metrics/latest_training_metrics.json`, a local generated artifact excluded from Git. This standalone evaluation does not replace the active workbench model or its pinned artifacts. See [docs/decision-models.md](docs/decision-models.md) for feature sets and replay details.
+
+The provenance panel loads the active experiment's persisted feature → decision → output graph when the dataset opens; correction previews temporarily narrow the graph to the proposed feature paths. The AI chat accepts general questions with or without a selected experiment. The backend builds evidence from persisted experiment/event/decision state, correction and recovery audits, explicit provenance paths, and sanitized Universal Logs filtered by question and relevant identifiers. Log context includes whole-history counts, relevant and recent events in chronology, and bounded details; the assistant is told when history is partial. The frontend displays evidence categories and sanitized log entries returned with the answer, and renders headings and lists as readable text. Persisted state and deterministic verification remain authoritative; AI can explain but cannot approve or execute recovery. The provider uses the OpenAI SDK Responses API with Groq's OpenAI-compatible endpoint. Copy `.env.example` to `.env`, then set `GROQ_API_KEY` to your Groq API key. `LLM_BASE_URL` defaults to `https://api.groq.com/openai/v1`; `LLM_MODEL` defaults to `openai/gpt-oss-20b`. `TEMPERATURE` and `MAX_TOKENS` control generation. The `/api/ai/status` endpoint reports provider/model configuration without disclosing the key. If the key is absent or the provider request fails, the application reports the error rather than returning a fabricated fallback answer.
 
 ## Running the application
 
@@ -100,14 +110,12 @@ Backend and frontend are independent but complementary:
 
 A complete demo flow is:
 
-1. Open the dashboard
-2. Select or edit SEC-000123
-3. Modify a feature such as asset_criticality
-4. Click Apply Correction
-5. Click Run Decision Rewind
-6. Review graph and AI explanation
-7. Execute selective rewind
-8. Inspect the verification and audit trail
+1. Train or retrain the global model.
+2. Generate a 200-record experiment and train it with its pinned frozen model.
+3. Select an event and propose one or more feature corrections.
+4. Preview counterfactual decisions and their provenance paths.
+5. Apply the correction, then run selective rewind.
+6. Review deterministic verification, the audit trail, and the AI explanation.
 
 ## API documentation
 
