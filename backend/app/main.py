@@ -23,6 +23,7 @@ install_application_log_capture()
 from backend.app.dataset.generator import generate_dataset
 from backend.app.llm.provider import LLMProvider
 from backend.app.ml.workbench_model import (
+    ALGORITHM_NAMES,
     TRAINING_EPOCHS,
     TRAINING_RECORD_COUNT,
     load_workbench_model,
@@ -234,13 +235,14 @@ def _run_training_job(job_id: str, training_dataset_id: str, seed: int, model_ve
             metrics[decision_id] = {"epoch": epoch, **stats}
             dataset_store.update_training_job(job_id, decision_id, epoch, metrics)
             universal_log.record(
-                "model.training.epoch",
+                "model.training.fit_completed",
                 "workbench_model",
                 {
                     "job_id": job_id,
                     "model_version": model_version,
                     "decision_id": decision_id,
-                    "epoch": epoch,
+                    "training_pass": epoch,
+                    "algorithm": ALGORITHM_NAMES[decision_id],
                     "metrics": stats,
                 },
             )
@@ -266,6 +268,7 @@ def get_model_status() -> Dict[str, Any]:
         "latest_training": dataset_store.get_latest_training_job(),
         "training_record_count": TRAINING_RECORD_COUNT,
         "epochs": TRAINING_EPOCHS,
+        "algorithms": ALGORITHM_NAMES,
     }
 
 
@@ -773,6 +776,7 @@ def get_metrics() -> Dict[str, Any]:
         },
         "decision_count": 5,
         "training_model_version": model["model_version"] if model else None,
+        "training_algorithms": ALGORITHM_NAMES,
         "training_validation_metrics": model["validation_metrics"] if model else None,
         "verification_status": latest_verification,
     }

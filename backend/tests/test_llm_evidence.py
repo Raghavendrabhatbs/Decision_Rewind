@@ -123,6 +123,11 @@ def test_evidence_builder_uses_persisted_state_and_includes_recovery_context(tmp
     assert evidence["selected_decision"]["decision_id"] == "D2"
     assert evidence["verification"]["verification"] == "VERIFIED"
     assert evidence["recovery"]["rewind_operations"] == ["RW-1", "RW-2"]
+    assert {
+        "feature": "failed_logins",
+        "decision_id": "D4",
+        "path": ["failed_logins", "D2", "D4"],
+    } in evidence["provenance_paths"]
     assert evidence["universal_log_context"]["events"][0]["details"]["message"] == "D2 prediction LOW"
     assert evidence["authority"]["persisted_database_state"] == "authoritative"
 

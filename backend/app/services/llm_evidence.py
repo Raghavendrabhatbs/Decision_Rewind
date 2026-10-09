@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from backend.app.provenance.graph import provenance_paths_for_features
 from backend.app.services.dataset_store import DatasetStore
 from backend.app.services.universal_log import UniversalLog
 
@@ -143,6 +144,7 @@ def build_llm_evidence(
         changes = (evidence.get("correction") or {}).get("changes", [])
         features = [item["feature"] for item in changes if isinstance(item, dict) and item.get("feature")]
         evidence["provenance"] = dataset_store.get_graph(dataset["dataset_id"], features or None)
+        evidence["provenance_paths"] = provenance_paths_for_features(features or None)
         evidence["workflow_audit"] = [
             {
                 "timestamp": row["timestamp"],

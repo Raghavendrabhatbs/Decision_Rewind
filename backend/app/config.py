@@ -15,7 +15,8 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def get_env(key: str, default: str = "") -> str:
-    return os.getenv(key, default)
+    value = os.getenv(key, default)
+    return value.strip() if isinstance(value, str) else value
 
 
 APP_NAME = get_env("APP_NAME", "DECISION-REWIND")

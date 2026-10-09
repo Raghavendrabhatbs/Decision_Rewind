@@ -18,7 +18,7 @@ def test_default_dataset_size_is_20000():
 
 
 def test_asset_criticality_change_impacts_only_relevant_decisions():
-    registry = ModelRegistry(seed=42)
+    registry = ModelRegistry(seed=42, training_size=1000)
     event = next(item for item in generate_dataset(size=1000, seed=42) if item["event_id"] == "SEC-000123")
     analysis = analyze_correction(event, {"asset_criticality": "CRITICAL"}, registry)
     affected_ids = {item["decision_id"] for item in analysis["decisions"] if item["affected"]}
@@ -30,7 +30,7 @@ def test_asset_criticality_change_impacts_only_relevant_decisions():
 
 
 def test_feature_used_only_by_d1_does_not_rewind_unrelated_decisions():
-    registry = ModelRegistry(seed=42)
+    registry = ModelRegistry(seed=42, training_size=1000)
     event = next(item for item in generate_dataset(size=1000, seed=42) if item["event_id"] == "SEC-000123")
     analysis = analyze_correction(event, {"failed_logins": 18}, registry)
     affected_ids = {item["decision_id"] for item in analysis["decisions"] if item["affected"]}
@@ -39,7 +39,7 @@ def test_feature_used_only_by_d1_does_not_rewind_unrelated_decisions():
 
 
 def test_identical_counterfactual_is_not_rewound():
-    registry = ModelRegistry(seed=42)
+    registry = ModelRegistry(seed=42, training_size=1000)
     event = next(item for item in generate_dataset(size=1000, seed=42) if item["event_id"] == "SEC-000123")
     event["asset_criticality"] = "LOW"
     analysis = analyze_correction(event, {"asset_criticality": "LOW"}, registry)
@@ -47,7 +47,7 @@ def test_identical_counterfactual_is_not_rewound():
 
 
 def test_verifier_rejects_invalid_recovery():
-    registry = ModelRegistry(seed=42)
+    registry = ModelRegistry(seed=42, training_size=1000)
     event = next(item for item in generate_dataset(size=1000, seed=42) if item["event_id"] == "SEC-000123")
     analysis = analyze_correction(event, {"asset_criticality": "CRITICAL"}, registry)
     result = deterministic_verifier(event, {"unknown_feature": "bad"}, analysis)

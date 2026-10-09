@@ -1,4 +1,5 @@
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -11,12 +12,11 @@ from backend.app.services.dataset_store import DatasetStore
 
 def _trained_store(tmp_path, monkeypatch):
     monkeypatch.setattr(workbench_model, "TRAINING_RECORD_COUNT", 200)
-    monkeypatch.setattr(workbench_model, "TRAINING_EPOCHS", 2)
     monkeypatch.setattr(workbench_model, "MODEL_DIR", tmp_path / "models")
     monkeypatch.setattr(workbench_model, "DATA_DIR", tmp_path / "data")
     dataset_store = DatasetStore(tmp_path / "workbench.db")
     events = generate_dataset(size=200, seed=7, include_demo_event=False)
-    dataset_store.create_training_job("JOB-TEST", "V1", "TRN-TEST", 7, 200, 2)
+    dataset_store.create_training_job("JOB-TEST", "V1", "TRN-TEST", 7, 200, 1)
     training = train_model_version("TRN-TEST", 7, events, "V1", lambda *_: None)
     dataset_store.complete_training_job("JOB-TEST", training)
     model = dataset_store.get_active_model()
@@ -45,9 +45,8 @@ def test_dataset_generation_has_200_new_non_demo_records():
     assert all("decision_outputs" not in item for item in unlabeled)
 
 
-def test_global_training_runs_each_epoch_and_saves_immutable_best_checkpoint(tmp_path, monkeypatch):
+def test_global_training_fits_authoritative_classifiers_once_and_pins_artifact(tmp_path, monkeypatch):
     monkeypatch.setattr(workbench_model, "TRAINING_RECORD_COUNT", 200)
-    monkeypatch.setattr(workbench_model, "TRAINING_EPOCHS", 100)
     monkeypatch.setattr(workbench_model, "MODEL_DIR", tmp_path / "models")
     monkeypatch.setattr(workbench_model, "DATA_DIR", tmp_path / "data")
     events = generate_dataset(size=200, seed=7, include_demo_event=False)
@@ -56,12 +55,32 @@ def test_global_training_runs_each_epoch_and_saves_immutable_best_checkpoint(tmp
     training = train_model_version("TRN-EPOCHS", 7, events, "V1", lambda *args: progress.append(args))
 
     assert training["training_record_count"] == len(events)
-    assert workbench_model.TRAINING_EPOCHS == 100
-    assert len(progress) == 5 * 100
+    assert workbench_model.TRAINING_EPOCHS == 1
+    assert training["epochs"] == 1
+    assert len(progress) == 5
     assert set(training["best_epoch"]) == {"D1", "D2", "D3", "D4", "D5"}
-    assert all(1 <= epoch <= 100 for epoch in training["best_epoch"].values())
+    assert all(epoch == 1 for epoch in training["best_epoch"].values())
+    assert training["algorithms"] == {
+        "D1": "Logistic Regression",
+        "D2": "Random Forest",
+        "D3": "Decision Tree",
+        "D4": "Logistic Regression",
+        "D5": "Random Forest",
+    }
     assert all(0 <= stats["validation_accuracy"] <= 1 for stats in training["validation_metrics"].values())
     model = load_workbench_model(training["artifact_path"])
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import Pipeline
+    from sklearn.tree import DecisionTreeClassifier
+
+    assert isinstance(model["D1"]["model"], Pipeline)
+    assert isinstance(model["D1"]["model"].named_steps["model"], LogisticRegression)
+    assert isinstance(model["D2"]["model"], RandomForestClassifier)
+    assert isinstance(model["D3"]["model"], DecisionTreeClassifier)
+    assert isinstance(model["D4"]["model"], Pipeline)
+    assert isinstance(model["D4"]["model"].named_steps["model"], LogisticRegression)
+    assert isinstance(model["D5"]["model"], RandomForestClassifier)
     artifact_hash = hashlib.sha256(Path(training["artifact_path"]).read_bytes()).hexdigest()
     predict_workbench_decisions(events[0], model)
     assert hashlib.sha256(Path(training["artifact_path"]).read_bytes()).hexdigest() == artifact_hash
@@ -71,6 +90,62 @@ def test_training_rejects_any_dataset_other_than_20000_records():
     assert workbench_model.TRAINING_RECORD_COUNT == 20_000
     with pytest.raises(ValueError, match="exactly 20000 records"):
         train_model_version("TRN-SHORT", 7, [{}] * 200, "V1", lambda *_: None)
+
+
+def test_prediction_remains_compatible_with_pinned_scaled_artifacts():
+    import numpy as np
+    from sklearn.preprocessing import StandardScaler
+
+    from backend.app.ml.workbench_model import EpochMLPClassifier
+
+    event = generate_dataset(size=1, seed=7, include_demo_event=False)[0]
+    classes = {
+        "D1": ["ALLOW", "BLOCK"],
+        "D2": ["LOW", "HIGH"],
+        "D3": ["NORMAL", "PROTECT"],
+        "D4": ["MONITOR", "ESCALATE"],
+        "D5": ["ALLOW", "ISOLATE"],
+    }
+    artifacts = {}
+    for decision_id in workbench_model.DECISION_IDS:
+        features = np.asarray([workbench_model._features(event, decision_id, "LOW")])
+        scaler = StandardScaler().fit(np.vstack([features, features + 1]))
+        model = EpochMLPClassifier(
+            np.asarray(classes[decision_id]),
+            {
+                "hidden_weights": np.zeros((features.shape[1], 2)),
+                "hidden_bias": np.zeros(2),
+                "output_weights": np.zeros((2, 2)),
+                "output_bias": np.zeros(2),
+            },
+        )
+        artifacts[decision_id] = {"scaler": scaler, "model": model}
+
+    assert predict_workbench_decisions(event, artifacts) == {
+        decision_id: classes[decision_id][0] for decision_id in workbench_model.DECISION_IDS
+    }
+
+
+def test_standalone_evaluation_writes_measured_classifier_metrics(tmp_path, monkeypatch):
+    from backend.app.ml import train
+
+    monkeypatch.setattr(train, "MODEL_DIR", tmp_path / "models")
+    metrics_path = train.train_and_evaluate(seed=7, record_count=200)
+    report = json.loads(metrics_path.read_text(encoding="utf-8"))
+
+    assert report["dataset_size"] == 200
+    assert report["training_size"] == 160
+    assert report["test_size"] == 40
+    assert set(report["decisions"]) == set(workbench_model.DECISION_IDS)
+    for decision_id, metrics in report["decisions"].items():
+        assert metrics["algorithm"] == workbench_model.ALGORITHM_NAMES[decision_id]
+        assert metrics["dataset_size"] == 200
+        assert metrics["training_size"] == 160
+        assert metrics["test_size"] == 40
+        assert len(metrics["confusion_matrix"]) == len(metrics["classes"])
+        assert all(len(row) == len(metrics["classes"]) for row in metrics["confusion_matrix"])
+        for metric in ("test_accuracy", "precision", "recall", "f1_score"):
+            assert 0 <= metrics[metric] <= 1
 
 
 def test_explicit_training_gates_experiments_and_versions_are_reused(tmp_path, monkeypatch):
@@ -83,21 +158,22 @@ def test_explicit_training_gates_experiments_and_versions_are_reused(tmp_path, m
     monkeypatch.setattr(main, "dataset_store", training_store)
     monkeypatch.setattr(main, "universal_log", UniversalLog(tmp_path / "universal_log.jsonl"))
     monkeypatch.setattr(main, "TRAINING_RECORD_COUNT", 200)
-    monkeypatch.setattr(main, "TRAINING_EPOCHS", 2)
+    monkeypatch.setattr(main, "TRAINING_EPOCHS", 1)
     monkeypatch.setattr(workbench_model, "TRAINING_RECORD_COUNT", 200)
-    monkeypatch.setattr(workbench_model, "TRAINING_EPOCHS", 2)
     monkeypatch.setattr(workbench_model, "MODEL_DIR", tmp_path / "models")
     monkeypatch.setattr(workbench_model, "DATA_DIR", tmp_path / "data")
 
     with TestClient(main.app) as client:
-        assert client.get("/api/models/status").json()["active_model"] is None
+        model_status = client.get("/api/models/status").json()
+        assert model_status["active_model"] is None
+        assert model_status["algorithms"] == workbench_model.ALGORITHM_NAMES
         assert client.post("/api/datasets").status_code == 409
 
         first_job = client.post("/api/models/train").json()
         first_status = client.get(f"/api/models/training/{first_job['job_id']}").json()
         assert first_status["status"] == "COMPLETED"
         assert first_status["record_count"] == 200
-        assert first_status["epochs"] == 2
+        assert first_status["epochs"] == 1
 
         first_experiment = client.post("/api/datasets").json()
         assert first_experiment["training_status"] == "NOT_TRAINED"

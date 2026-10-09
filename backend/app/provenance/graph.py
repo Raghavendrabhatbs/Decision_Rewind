@@ -68,3 +68,27 @@ def graph_payload_for_features(features: List[str] | None = None) -> Dict[str, L
         if source in included and target in included
     ]
     return {"nodes": nodes, "edges": edges}
+
+
+def provenance_paths_for_features(features: List[str] | None = None) -> List[Dict[str, object]]:
+    graph = build_provenance_graph()
+    selected_features = features if features is not None else list(FEATURE_TO_DECISIONS)
+    paths: List[Dict[str, object]] = []
+    for feature in selected_features:
+        if feature not in graph or graph.nodes[feature].get("kind") != "feature":
+            continue
+        decisions = sorted(
+            node
+            for node in nx.descendants(graph, feature)
+            if graph.nodes[node].get("kind") == "decision"
+        )
+        for decision in decisions:
+            paths.extend(
+                {
+                    "feature": feature,
+                    "decision_id": decision,
+                    "path": path,
+                }
+                for path in nx.all_simple_paths(graph, feature, decision)
+            )
+    return paths

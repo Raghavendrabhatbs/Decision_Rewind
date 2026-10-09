@@ -61,6 +61,13 @@ def test_metrics_report_absent_training_and_verification_as_unavailable(tmp_path
         "datasets": {"training": None, "active_experiment": None},
         "decision_count": 5,
         "training_model_version": None,
+        "training_algorithms": {
+            "D1": "Logistic Regression",
+            "D2": "Random Forest",
+            "D3": "Decision Tree",
+            "D4": "Logistic Regression",
+            "D5": "Random Forest",
+        },
         "training_validation_metrics": None,
         "verification_status": "NOT_AVAILABLE",
     }

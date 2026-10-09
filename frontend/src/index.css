@@ -255,6 +255,35 @@ button:disabled {
   color: #dbeafe;
 }
 
+.ai-answer-content h3 {
+ margin: 0.75rem 0 0.35rem;
+ color: #7dd3fc;
+ font-size: 0.95rem;
+}
+
+.ai-answer-content h3:first-child {
+ margin-top: 0;
+}
+
+.ai-answer-content p {
+ margin: 0.35rem 0;
+}
+
+.ai-answer-bullet {
+ display: flex;
+ gap: 0.5rem;
+ margin: 0.25rem 0 0.25rem 0.25rem;
+}
+
+.ai-answer-bullet::before {
+ content: '•';
+ color: #38bdf8;
+}
+
+.ai-answer-spacer {
+ height: 0.35rem;
+}
+
 .evidence-box {
   margin-top: 1rem;
   background: rgba(12, 25, 37, 0.8);

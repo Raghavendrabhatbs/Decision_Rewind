@@ -80,6 +80,7 @@ type ModelStatus = {
   latest_training: TrainingJob | null;
   training_record_count: number;
   epochs: number;
+  algorithms: Record<string, string>;
 };
 
 type DecisionState = {
@@ -268,6 +269,32 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 const LOGGING_FAILURE_PREFIX = 'Could not save application log';
+
+function AiAnswer({ answer }: { answer: string }) {
+  const inline = (text: string) =>
+    text.split(/(\*\*[^*]+\*\*)/g).map((part, index) =>
+      part.startsWith('**') && part.endsWith('**')
+        ? <strong key={index}>{part.slice(2, -2)}</strong>
+        : <span key={index}>{part}</span>,
+    );
+
+  return (
+    <div className="ai-answer ai-answer-content">
+      {answer.replace(/\r\n?/g, '\n').split('\n').map((line, index) => {
+        const text = line.trim();
+        if (!text) return <div className="ai-answer-spacer" key={index} />;
+        if (text.startsWith('## ')) return <h3 key={index}>{inline(text.slice(3))}</h3>;
+        if (/^[-*]\s+/.test(text)) {
+          return <div className="ai-answer-bullet" key={index}>{inline(text.replace(/^[-*]\s+/, ''))}</div>;
+        }
+        if (/^\d+[.)]\s+/.test(text)) {
+          return <div className="ai-answer-bullet" key={index}>{inline(text.replace(/^\d+[.)]\s+/, ''))}</div>;
+        }
+        return <p key={index}>{inline(text)}</p>;
+      })}
+    </div>
+  );
+}
 
 function recordFrontendLog(eventType: string, details: Record<string, unknown>, source = 'app') {
   void fetch(`${API_BASE}/api/universal-log/client`, {
@@ -514,7 +541,7 @@ export default function App() {
               setError(cause instanceof Error ? cause.message : 'Could not refresh model status.');
             });
             if (job.status === 'FAILED') setError(job.error || 'Model training failed.');
-            else setMessage(`Training complete: SOC-MODEL-${job.model_version} trained on ${job.record_count.toLocaleString()} records for ${job.epochs} epochs.`);
+            else setMessage(`Training complete: SOC-MODEL-${job.model_version} fitted on ${job.record_count.toLocaleString()} records in one pass.`);
           }
         })
         .catch((cause) => {
@@ -746,7 +773,7 @@ export default function App() {
       }
       await loadModelStatus();
       if (current.status === 'FAILED') throw new Error(current.error || 'Model training failed.');
-      setMessage(`Training complete: SOC-MODEL-${current.model_version} trained on ${current.record_count.toLocaleString()} records for ${current.epochs} epochs. Generate a new experiment to use this frozen model.`);
+      setMessage(`Training complete: SOC-MODEL-${current.model_version} fitted on ${current.record_count.toLocaleString()} records in one pass. Generate a new experiment to use this frozen model.`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not train the model.');
     } finally {
@@ -1011,6 +1038,7 @@ export default function App() {
               </span>
               <span>Workflow: {dataset.workflow_status}</span>
               <span>Frozen model: {dataset.model_id} · {dataset.model_version}</span>
+              <span>Algorithms: {Array.from(new Set(Object.values(modelStatus?.algorithms ?? {}))).join(', ') || '—'}</span>
               <span>Global training set: {modelStatus?.models.find((model) => model.model_id === dataset.model_id)?.training_record_count.toLocaleString() ?? '—'} rows · {dataset.training_dataset_id}</span>
             </div>}
           </div>
@@ -1297,7 +1325,7 @@ export default function App() {
               <button onClick={askAi} disabled={busy || !aiQuestion.trim()}>{busy ? 'THINKING…' : 'ASK'}</button>
             </div>
             {aiError && <p className="workbench-error" role="alert">{aiError}</p>}
-            <p className="ai-answer">{aiAnswer || 'Ask about decisions, experiments, or application history and logs.'}</p>
+            <AiAnswer answer={aiAnswer || 'Ask about decisions, experiments, or application history and logs.'} />
             {aiSource && <small className="ai-source">Answered by {aiSource}</small>}
             {aiEvidence && (
               <div className="ai-evidence">

@@ -19,7 +19,7 @@ py -3.11 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 
 The API appends structured JSON Lines records to `data/universal_log.jsonl`.
 It records API request and response payloads, including model results, and
-training epoch metrics. Backend Python and Uvicorn logger records, frontend
+per-model fit metrics. Backend Python and Uvicorn logger records, frontend
 click/change activity, frontend console warnings/errors, browser errors, and
 application start/stop events are also recorded. Failed frontend API calls are
 logged without their request bodies. AI chat and explanation requests include
