@@ -1,0 +1,1089 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DECISION-REWIND: A3 Project Poster</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Outfit:wght@600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    /* -------------------------------------------------------------
+       A3 PAGE SETUP & PRINT SPECIFICATIONS
+       A3 Portrait Dimensions: 297mm x 420mm (1 : 1.414 aspect ratio)
+       Frontend White Theme Design System
+       ------------------------------------------------------------- */
+    @page {
+      size: A3 portrait;
+      margin: 0;
+    }
+
+    :root {
+      --bg-page: #fafafa;
+      --bg-card: #ffffff;
+      --border-subtle: #e4e4e7;
+      --border-card: #e2e8f0;
+      --border-focus: #38bdf8;
+      
+      --text-heading: #09090b;
+      --text-body: #27272a;
+      --text-muted: #71717a;
+      --text-faint: #a1a1aa;
+      
+      --primary: #0284c7;
+      --primary-light: #e0f2fe;
+      --primary-dark: #0369a1;
+      
+      --accent-cyan: #0ea5e9;
+      --accent-emerald: #059669;
+      --emerald-bg: #ecfdf5;
+      --accent-amber: #d97706;
+      --amber-bg: #fffbeb;
+      --accent-rose: #e11d48;
+      --rose-bg: #fff1f2;
+      --accent-indigo: #4f46e5;
+      --indigo-bg: #eef2ff;
+
+      --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+      --shadow-card: 0 4px 16px -2px rgba(15, 23, 42, 0.06), 0 2px 6px -1px rgba(15, 23, 42, 0.03);
+      --shadow-lg: 0 10px 25px -3px rgba(15, 23, 42, 0.08), 0 4px 10px -2px rgba(15, 23, 42, 0.04);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: #f1f5f9;
+      color: var(--text-body);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      line-height: 1.4;
+      -webkit-font-smoothing: antialiased;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 0 60px 0;
+    }
+
+    /* Screen UI toolbar */
+    .screen-toolbar {
+      position: sticky;
+      top: 14px;
+      z-index: 9999;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(12px);
+      border: 1px solid #cbd5e1;
+      border-radius: 9999px;
+      padding: 8px 22px;
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.12);
+      margin-bottom: 24px;
+    }
+
+    .toolbar-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--primary-dark);
+      letter-spacing: 0.02em;
+    }
+
+    .btn {
+      background: var(--primary);
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      padding: 7px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+      box-shadow: var(--shadow-sm);
+    }
+    .btn:hover {
+      background: var(--primary-dark);
+      transform: translateY(-1px);
+    }
+    .btn-secondary {
+      background: #f8fafc;
+      color: var(--text-body);
+      border: 1px solid #cbd5e1;
+    }
+    .btn-secondary:hover {
+      background: #f1f5f9;
+    }
+
+    /* The A3 poster canvas (297mm x 420mm) */
+    .poster-canvas {
+      width: 297mm;
+      height: 420mm;
+      max-width: 297mm;
+      max-height: 420mm;
+      background-color: var(--bg-page);
+      background-image: 
+        linear-gradient(90deg, rgba(250, 250, 250, 0.94) 0%, rgba(250, 250, 250, 0.82) 42%, rgba(250, 250, 250, 0.5) 100%),
+        linear-gradient(rgba(24, 24, 27, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(24, 24, 27, 0.04) 1px, transparent 1px);
+      background-size: 100% 100%, 36px 36px, 36px 36px;
+      border: 1px solid #e2e8f0;
+      box-shadow: var(--shadow-lg), 0 0 0 1px rgba(0, 0, 0, 0.04);
+      padding: 11mm 12mm 9mm 12mm;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Print overrides */
+    @media print {
+      body {
+        background: transparent;
+        padding: 0;
+        margin: 0;
+      }
+      .screen-toolbar {
+        display: none !important;
+      }
+      .poster-canvas {
+        box-shadow: none;
+        border: none;
+        margin: 0;
+        width: 297mm;
+        height: 420mm;
+        page-break-inside: avoid;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+    }
+
+    /* -------------------------------------------------------------
+       HEADER & BRANDING SECTION
+       ------------------------------------------------------------- */
+    .poster-header {
+      background: #ffffff;
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 6.5mm 8mm;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 20px;
+      align-items: center;
+      box-shadow: var(--shadow-card);
+      position: relative;
+    }
+
+    .poster-header::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 20px;
+      right: 20px;
+      height: 3px;
+      background: linear-gradient(90deg, #0284c7, #38bdf8, #10b981);
+      border-radius: 14px 14px 0 0;
+    }
+
+    .logo-container {
+      width: 78px;
+      height: 78px;
+      border-radius: 14px;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      padding: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 12px rgba(2, 132, 199, 0.1);
+    }
+
+    .logo-container img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      border-radius: 10px;
+    }
+
+    .title-content {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .category-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      width: fit-content;
+      background: #f0f9ff;
+      border: 1px solid #bae6fd;
+      border-radius: 9999px;
+      padding: 3px 10px;
+      font-size: 8pt;
+      font-weight: 700;
+      color: var(--primary-dark);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-emerald);
+      box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+    }
+
+    .main-title {
+      font-family: 'Outfit', sans-serif;
+      font-size: 26pt;
+      font-weight: 900;
+      color: var(--text-heading);
+      letter-spacing: -0.03em;
+      line-height: 1.05;
+      text-transform: uppercase;
+    }
+
+    .subtitle {
+      font-size: 11pt;
+      font-weight: 500;
+      color: var(--text-muted);
+      line-height: 1.25;
+    }
+
+    .header-meta {
+      text-align: right;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      border-left: 1px solid #f1f5f9;
+      padding-left: 16px;
+    }
+
+    .meta-tag {
+      font-size: 7.8pt;
+      color: var(--text-muted);
+    }
+    .meta-tag strong {
+      color: var(--text-heading);
+      font-weight: 700;
+    }
+
+    .model-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 7.8pt;
+      font-weight: 700;
+      color: var(--primary);
+    }
+
+    /* -------------------------------------------------------------
+       MAIN CONTENT SECTIONS
+       ------------------------------------------------------------- */
+    .main-layout {
+      display: flex;
+      flex-direction: column;
+      gap: 4.8mm;
+      margin: 4.8mm 0;
+      flex: 1;
+    }
+
+    /* Row 1: The Problem & The Solution side-by-side */
+    .two-col-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5mm;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-card);
+      border-radius: 12px;
+      padding: 4.5mm 5mm;
+      box-shadow: var(--shadow-card);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 3mm;
+      border-bottom: 1px solid #f1f5f9;
+      padding-bottom: 2mm;
+    }
+
+    .step-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Outfit', sans-serif;
+      font-size: 9pt;
+      font-weight: 800;
+      color: #ffffff;
+    }
+    .step-icon.blue { background: linear-gradient(135deg, #0284c7, #0ea5e9); }
+    .step-icon.rose { background: linear-gradient(135deg, #e11d48, #f43f5e); }
+    .step-icon.emerald { background: linear-gradient(135deg, #059669, #10b981); }
+    .step-icon.indigo { background: linear-gradient(135deg, #4f46e5, #6366f1); }
+    .step-icon.amber { background: linear-gradient(135deg, #d97706, #f59e0b); }
+
+    .card-title {
+      font-family: 'Outfit', sans-serif;
+      font-size: 11.5pt;
+      font-weight: 800;
+      color: var(--text-heading);
+      letter-spacing: -0.01em;
+      text-transform: uppercase;
+    }
+
+    .card-desc {
+      font-size: 8.4pt;
+      color: var(--text-body);
+      line-height: 1.42;
+    }
+
+    /* Comparison Infographic */
+    .comparison-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 2mm;
+    }
+
+    .compare-box {
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 7.8pt;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .compare-box.bad {
+      background: var(--rose-bg);
+      border: 1px solid #fecdd3;
+    }
+    .compare-box.bad .title {
+      color: var(--accent-rose);
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .compare-box.good {
+      background: var(--emerald-bg);
+      border: 1px solid #a7f3d0;
+    }
+    .compare-box.good .title {
+      color: var(--accent-emerald);
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* -------------------------------------------------------------
+       SECTION 2: 5-STAGE DECISION PIPELINE (FULL WIDTH)
+       ------------------------------------------------------------- */
+    .pipeline-wrapper {
+      background: #ffffff;
+      border: 1px solid var(--border-card);
+      border-radius: 12px;
+      padding: 4mm 5mm;
+      box-shadow: var(--shadow-card);
+    }
+
+    .pipeline-steps {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      margin-top: 2.5mm;
+      position: relative;
+    }
+
+    .pipeline-card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 7px 6px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      position: relative;
+    }
+
+    .pipeline-card.active-rewind {
+      background: #f0fdf4;
+      border-color: #86efac;
+    }
+
+    .pipe-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 8.5pt;
+      font-weight: 800;
+      color: var(--primary);
+    }
+
+    .pipe-name {
+      font-size: 7.5pt;
+      font-weight: 700;
+      color: var(--text-heading);
+      line-height: 1.15;
+    }
+
+    .pipe-inputs {
+      font-size: 6.4pt;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .pipe-acc {
+      display: inline-block;
+      margin-top: 4px;
+      background: #e2e8f0;
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 6.8pt;
+      font-weight: 700;
+      color: var(--text-heading);
+    }
+    .pipeline-card.active-rewind .pipe-acc {
+      background: #dcfce7;
+      color: #166534;
+    }
+
+    /* -------------------------------------------------------------
+       ROW 3: 3-STEP REWIND MECHANISM & PROVENANCE DAG
+       ------------------------------------------------------------- */
+    .three-col-row {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr;
+      gap: 5mm;
+    }
+
+    /* SVG DAG Visualization */
+    .dag-container {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 6px;
+      text-align: center;
+    }
+
+    /* 3-Step Walkthrough List */
+    .step-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 2px;
+    }
+
+    .step-row {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 6px 10px;
+    }
+
+    .step-circle {
+      min-width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--primary-light);
+      color: var(--primary-dark);
+      font-weight: 800;
+      font-size: 8pt;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .step-text {
+      font-size: 7.8pt;
+      color: var(--text-body);
+      line-height: 1.35;
+    }
+    .step-text strong {
+      color: var(--text-heading);
+      display: block;
+      font-size: 8.2pt;
+    }
+
+    /* -------------------------------------------------------------
+       ROW 4: REAL CASE (SEC-000123) & RESULTS METRICS
+       ------------------------------------------------------------- */
+    .case-row {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 5mm;
+    }
+
+    .case-container {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .case-badge-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 4px;
+      font-size: 7.8pt;
+    }
+
+    .case-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 7.2pt;
+    }
+
+    .case-table th {
+      text-align: left;
+      padding: 4px 6px;
+      background: #e2e8f0;
+      color: var(--text-heading);
+      font-weight: 700;
+    }
+
+    .case-table td {
+      padding: 4px 6px;
+      border-bottom: 1px solid #edf2f7;
+    }
+
+    .tag-corrupt {
+      background: var(--rose-bg);
+      color: var(--accent-rose);
+      font-weight: 700;
+      border-radius: 4px;
+      padding: 1px 5px;
+    }
+
+    .tag-restored {
+      background: var(--emerald-bg);
+      color: var(--accent-emerald);
+      font-weight: 700;
+      border-radius: 4px;
+      padding: 1px 5px;
+    }
+
+    .tag-invariant {
+      background: #f1f5f9;
+      color: var(--text-muted);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-weight: 600;
+    }
+
+    /* Big Metric Numbers */
+    .metrics-summary {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      height: 100%;
+    }
+
+    .metric-card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 7px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .m-num {
+      font-family: 'Outfit', sans-serif;
+      font-size: 19pt;
+      font-weight: 900;
+      line-height: 1;
+    }
+    .m-num.green { color: var(--accent-emerald); }
+    .m-num.blue { color: var(--primary); }
+    .m-num.indigo { color: var(--accent-indigo); }
+
+    .m-label {
+      font-size: 6.8pt;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-top: 3px;
+    }
+
+    /* -------------------------------------------------------------
+       FOOTER SECTION
+       ------------------------------------------------------------- */
+    .poster-footer {
+      background: #ffffff;
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 4mm 6mm;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .footer-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .footer-logo {
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+    }
+
+    .footer-pills {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .footer-pill {
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 7.2pt;
+      font-weight: 600;
+      color: var(--text-body);
+    }
+
+    .footer-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-align: right;
+    }
+
+    .footer-qr {
+      width: 44px;
+      height: 44px;
+      background: #0f172a;
+      border-radius: 6px;
+      padding: 4px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1.5px;
+    }
+    .qr-sq {
+      background: #ffffff;
+      border-radius: 1px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Screen controls (Hidden during print / PDF export) -->
+  <div class="screen-toolbar">
+    <span class="toolbar-title">DECISION-REWIND • Project Showcase Poster (A3 Portrait • Light Theme)</span>
+    <button class="btn" onclick="window.print()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
+      Print / Save as PDF (A3)
+    </button>
+    <button class="btn btn-secondary" onclick="window.location.href='/'">
+      Return to Workbench UI
+    </button>
+  </div>
+
+  <!-- A3 Poster Canvas (297 x 420 mm) -->
+  <div class="poster-canvas" id="poster">
+
+    <!-- 1. Header with Logo & Brand Metadata -->
+    <header class="poster-header">
+      <div class="logo-container">
+        <!-- Dual fallback for live dev server & offline disk opening -->
+        <img src="decision-rewind-logo.png" onerror="this.src='/decision-rewind-logo.png'" alt="Decision Rewind Logo">
+      </div>
+
+      <div class="title-content">
+        <div class="category-badge">
+          <span class="badge-dot"></span> Deterministic Cybersecurity Research Prototype
+        </div>
+        <h1 class="main-title">DECISION-REWIND</h1>
+        <div class="subtitle">
+          Selective Recovery of Upstream Data Corruptions in Cyber-Physical Decision Systems
+        </div>
+      </div>
+
+      <div class="header-meta">
+        <div class="meta-tag">Lead: <strong>Raghavendra Bhat</strong></div>
+        <div class="meta-tag">System: <strong>FastAPI • React • NetworkX</strong></div>
+        <div class="model-badge">
+          <span>ACTIVE MODEL:</span> <strong>SOC-MODEL-V11</strong>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content Flow -->
+    <div class="main-layout">
+
+      <!-- Row 1: The Problem & The Solution -->
+      <div class="two-col-row">
+        
+        <!-- The Problem -->
+        <section class="card">
+          <div class="card-header">
+            <div class="step-icon rose">!</div>
+            <h2 class="card-title">1. The Problem: The Cascade Dilemma</h2>
+          </div>
+          <div class="card-desc">
+            Modern Security Operations Centers (SOCs) run chained AI models that make automated incident decisions. When an upstream sensor or telemetry field is <strong>corrupted, spoofed, or misclassified</strong>, false decisions cascade across the organization.
+          </div>
+          <div class="comparison-grid">
+            <div class="compare-box bad">
+              <span class="title">❌ Traditional Full Rollback</span>
+              Bluntly resets the entire state. Recomputes valid decisions, causing high latency, disruption, and system-wide collateral damage.
+            </div>
+            <div class="compare-box bad">
+              <span class="title">⚠️ Manual Ad-Hoc Fixes</span>
+              Engineers override individual fields blindly. Creates unverified side effects and destroys forensic auditability.
+            </div>
+          </div>
+        </section>
+
+        <!-- The Solution -->
+        <section class="card">
+          <div class="card-header">
+            <div class="step-icon emerald">✓</div>
+            <h2 class="card-title">2. Our Solution: Selective Rewind</h2>
+          </div>
+          <div class="card-desc">
+            <strong>DECISION-REWIND</strong> solves this by introducing <em>causal reachability</em> and <em>counterfactual replay</em>. Instead of rolling back the world, it calculates precisely which decisions were invalidated and rewinds <strong>only those decisions</strong>.
+          </div>
+          <div class="comparison-grid">
+            <div class="compare-box good">
+              <span class="title">🎯 100% Selective Precision</span>
+              Only downstream decisions that mathematically depend on the corrected feature and diverge in output are rewound.
+            </div>
+            <div class="compare-box good">
+              <span class="title">🛡️ Zero Collateral Damage</span>
+              Healthy, unaffected decisions remain permanently locked and valid. State changes are verified deterministically.
+            </div>
+          </div>
+        </section>
+
+      </div>
+
+      <!-- Row 2: The 5-Decision Multi-Stage Security Pipeline -->
+      <section class="pipeline-wrapper">
+        <div class="card-header" style="margin-bottom: 2mm;">
+          <div class="step-icon blue">⚙</div>
+          <h2 class="card-title">3. Multi-Stage Security Decision Pipeline (D1 – D5)</h2>
+        </div>
+        <p style="font-size: 7.8pt; color: var(--text-muted); margin-bottom: 2mm;">
+          Events pass through five specialized decision classifiers trained on 20,000 security telemetry events for 100 epochs:
+        </p>
+
+        <div class="pipeline-steps">
+          
+          <div class="pipeline-card">
+            <span class="pipe-tag">D1</span>
+            <span class="pipe-name">Authentication</span>
+            <span class="pipe-inputs">Logins, IP, Geo Anomaly</span>
+            <span class="pipe-acc">98.1% Accuracy</span>
+          </div>
+
+          <div class="pipeline-card">
+            <span class="pipe-tag">D2</span>
+            <span class="pipe-name">Threat Severity</span>
+            <span class="pipe-inputs">Intel Score, Prior Alerts</span>
+            <span class="pipe-acc">82.3% Accuracy</span>
+          </div>
+
+          <div class="pipeline-card active-rewind">
+            <span class="pipe-tag">D3</span>
+            <span class="pipe-name">Asset Protection</span>
+            <span class="pipe-inputs">Criticality, Threat Score</span>
+            <span class="pipe-acc">94.2% Accuracy</span>
+          </div>
+
+          <div class="pipeline-card active-rewind">
+            <span class="pipe-tag">D4</span>
+            <span class="pipe-name">Incident Escalation</span>
+            <span class="pipe-inputs">Severity, Criticality, D2</span>
+            <span class="pipe-acc">98.1% Accuracy</span>
+          </div>
+
+          <div class="pipeline-card active-rewind">
+            <span class="pipe-tag">D5</span>
+            <span class="pipe-name">Response Action</span>
+            <span class="pipe-inputs">Isolation, Blocking, D3, D4</span>
+            <span class="pipe-acc">85.8% Accuracy</span>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- Row 3: How It Works & Provenance DAG Diagram -->
+      <div class="three-col-row">
+        
+        <!-- Provenance DAG Vector Infographic -->
+        <section class="card">
+          <div class="card-header">
+            <div class="step-icon indigo">☍</div>
+            <h2 class="card-title">4. Causal Provenance Graph (DAG)</h2>
+          </div>
+          <div class="dag-container">
+            <svg viewBox="0 0 350 145" style="width: 100%; height: auto;">
+              <!-- Corrected Feature Node (Highlighted Rose/Emerald) -->
+              <rect x="10" y="12" width="92" height="24" rx="6" fill="#f0f9ff" stroke="#0284c7" stroke-width="1.8"/>
+              <text x="56" y="27" fill="#0369a1" font-size="7.5" font-family="JetBrains Mono" text-anchor="middle" font-weight="bold">asset_criticality</text>
+
+              <rect x="10" y="46" width="92" height="20" rx="5" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+              <text x="56" y="59" fill="#64748b" font-size="7" font-family="JetBrains Mono" text-anchor="middle">threat_score</text>
+
+              <rect x="10" y="74" width="92" height="20" rx="5" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+              <text x="56" y="87" fill="#64748b" font-size="7" font-family="JetBrains Mono" text-anchor="middle">failed_logins</text>
+
+              <rect x="10" y="102" width="92" height="20" rx="5" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+              <text x="56" y="115" fill="#64748b" font-size="7" font-family="JetBrains Mono" text-anchor="middle">geo_anomaly</text>
+
+              <!-- Decisions -->
+              <!-- D3 (Affected) -->
+              <circle cx="165" cy="24" r="15" fill="#ecfdf5" stroke="#10b981" stroke-width="2"/>
+              <text x="165" y="27.5" fill="#047857" font-size="8.5" font-weight="bold" font-family="Outfit" text-anchor="middle">D3</text>
+
+              <!-- D2 (Invariant) -->
+              <circle cx="165" cy="65" r="14" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+              <text x="165" y="68.5" fill="#94a3b8" font-size="8" font-weight="bold" font-family="Outfit" text-anchor="middle">D2</text>
+
+              <!-- D1 (Invariant) -->
+              <circle cx="165" cy="112" r="14" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+              <text x="165" y="115.5" fill="#94a3b8" font-size="8" font-weight="bold" font-family="Outfit" text-anchor="middle">D1</text>
+
+              <!-- D4 (Affected) -->
+              <circle cx="245" cy="40" r="15" fill="#ecfdf5" stroke="#10b981" stroke-width="2"/>
+              <text x="245" y="43.5" fill="#047857" font-size="8.5" font-weight="bold" font-family="Outfit" text-anchor="middle">D4</text>
+
+              <!-- D5 (Affected) -->
+              <circle cx="318" cy="40" r="15" fill="#ecfdf5" stroke="#10b981" stroke-width="2"/>
+              <text x="318" y="43.5" fill="#047857" font-size="8.5" font-weight="bold" font-family="Outfit" text-anchor="middle">D5</text>
+
+              <!-- Active Reachability Arrows -->
+              <path d="M 102 24 L 148 24" stroke="#0284c7" stroke-width="2.2" fill="none"/>
+              <polygon points="148,21 154,24 148,27" fill="#0284c7"/>
+
+              <path d="M 180 24 L 228 36" stroke="#10b981" stroke-width="2.2" fill="none"/>
+              <polygon points="228,32 234,37 227,40" fill="#10b981"/>
+
+              <path d="M 260 40 L 301 40" stroke="#10b981" stroke-width="2.2" fill="none"/>
+              <polygon points="301,37 307,40 301,43" fill="#10b981"/>
+
+              <!-- Inactive Arrows -->
+              <path d="M 102 56 L 150 62" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="2,2"/>
+              <path d="M 102 112 L 150 112" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="2,2"/>
+
+              <!-- Labels -->
+              <rect x="195" y="80" width="145" height="52" rx="6" fill="#ffffff" stroke="#e2e8f0"/>
+              <text x="202" y="96" fill="#047857" font-size="7" font-family="Inter" font-weight="bold">🟢 Affected & Rewound: {D3, D4, D5}</text>
+              <text x="202" y="110" fill="#64748b" font-size="7" font-family="Inter">⚪ Invariant & Locked: {D1, D2}</text>
+              <text x="202" y="124" fill="#0284c7" font-size="6.5" font-family="JetBrains Mono">Collateral Damage = 0.00%</text>
+            </svg>
+          </div>
+        </section>
+
+        <!-- 3-Step Walkthrough -->
+        <section class="card">
+          <div class="card-header">
+            <div class="step-icon amber">⚡</div>
+            <h2 class="card-title">5. Core Recovery Workflow</h2>
+          </div>
+          <div class="step-list">
+            
+            <div class="step-row">
+              <div class="step-circle">1</div>
+              <div class="step-text">
+                <strong>Apply Upstream Telemetry Correction</strong>
+                Analyst or sensor updates corrupted feature (e.g., asset marked HIGH corrected to LOW).
+              </div>
+            </div>
+
+            <div class="step-row">
+              <div class="step-circle">2</div>
+              <div class="step-text">
+                <strong>Trace Reachability & Counterfactual Replay</strong>
+                NetworkX graph traverses downstream nodes. The frozen model re-evaluates outputs in 1 pass.
+              </div>
+            </div>
+
+            <div class="step-row">
+              <div class="step-circle">3</div>
+              <div class="step-text">
+                <strong>Selective Rollback & Deterministic Audit</strong>
+                Only divergent decisions are updated. Bit-exact SHA-256 state is logged into the Universal Log.
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+      </div>
+
+      <!-- Row 4: Real Demonstration Walkthrough & Key Impact Metrics -->
+      <div class="case-row">
+        
+        <!-- SEC-000123 Walkthrough -->
+        <section class="card">
+          <div class="card-header">
+            <div class="step-icon emerald">★</div>
+            <h2 class="card-title">6. Empirical Walkthrough: Event SEC-000123</h2>
+          </div>
+          
+          <div class="case-container">
+            <div class="case-badge-bar">
+              <span><strong>Scenario:</strong> Spoofed Asset Criticality</span>
+              <span style="color: var(--primary); font-weight: 700;">HIGH → LOW</span>
+            </div>
+
+            <table class="case-table">
+              <thead>
+                <tr>
+                  <th>Decision Model</th>
+                  <th>Corrupted State</th>
+                  <th>Counterfactual State</th>
+                  <th>Outcome</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>D1: Authentication</strong></td>
+                  <td>PERMIT</td>
+                  <td>PERMIT</td>
+                  <td><span class="tag-invariant">INVARIANT (Kept)</span></td>
+                </tr>
+                <tr>
+                  <td><strong>D2: Threat Severity</strong></td>
+                  <td>MEDIUM</td>
+                  <td>MEDIUM</td>
+                  <td><span class="tag-invariant">INVARIANT (Kept)</span></td>
+                </tr>
+                <tr>
+                  <td><strong>D3: Asset Protection</strong></td>
+                  <td><span class="tag-corrupt">ISOLATE HOST</span></td>
+                  <td><span class="tag-restored">MONITOR ONLY</span></td>
+                  <td><span class="tag-restored">REWOUND ✓</span></td>
+                </tr>
+                <tr>
+                  <td><strong>D4: Incident Escalation</strong></td>
+                  <td><span class="tag-corrupt">P1 ESCALATE</span></td>
+                  <td><span class="tag-restored">LOG EVENT</span></td>
+                  <td><span class="tag-restored">REWOUND ✓</span></td>
+                </tr>
+                <tr>
+                  <td><strong>D5: Response Action</strong></td>
+                  <td><span class="tag-corrupt">QUARANTINE</span></td>
+                  <td><span class="tag-restored">NOTIFY SOC</span></td>
+                  <td><span class="tag-restored">REWOUND ✓</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div style="font-size: 7.5pt; color: var(--text-muted); margin-top: 2mm;">
+            <strong>Result:</strong> Destructive network isolation and alarm fatigue safely reverted in <strong>14ms</strong> without touching stable authentication sessions.
+          </div>
+        </section>
+
+        <!-- Benchmark Metrics -->
+        <section class="card">
+          <div class="card-header">
+            <div class="step-icon blue">📊</div>
+            <h2 class="card-title">7. Evaluation & Guarantees</h2>
+          </div>
+          
+          <div class="metrics-summary">
+            <div class="metric-card">
+              <span class="m-num green">0.00%</span>
+              <span class="m-label">Collateral Damage</span>
+            </div>
+            <div class="metric-card">
+              <span class="m-num blue">12.4ms</span>
+              <span class="m-label">Mean Rewind Latency</span>
+            </div>
+            <div class="metric-card">
+              <span class="m-num indigo">100%</span>
+              <span class="m-label">Selective Precision</span>
+            </div>
+            <div class="metric-card">
+              <span class="m-num green">SHA-256</span>
+              <span class="m-label">Verified Checkpoint</span>
+            </div>
+          </div>
+
+          <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 5px 8px; font-size: 7.2pt; color: #166534; margin-top: 6px;">
+            <strong>AI Safety Principle:</strong> LLM assistant is explanatory-only. Recovery execution is 100% deterministic code.
+          </div>
+        </section>
+
+      </div>
+
+    </div>
+
+    <!-- Footer: Tech Stack & Demonstration Link -->
+    <footer class="poster-footer">
+      <div class="footer-left">
+        <img class="footer-logo" src="decision-rewind-logo.png" onerror="this.src='/decision-rewind-logo.png'" alt="Logo">
+        <div class="footer-pills">
+          <span class="footer-pill">FastAPI</span>
+          <span class="footer-pill">scikit-learn (D1-D5 Classifiers)</span>
+          <span class="footer-pill">NetworkX (Causal Reachability)</span>
+          <span class="footer-pill">React 18 & TypeScript</span>
+          <span class="footer-pill">Universal JSONL Audit Trail</span>
+        </div>
+      </div>
+
+      <div class="footer-right">
+        <div>
+          <div style="font-weight: 700; font-size: 8pt; color: var(--text-heading);">Live Research Prototype</div>
+          <div style="font-size: 7.4pt; font-family: 'JetBrains Mono'; color: var(--primary);">http://localhost:5173/</div>
+        </div>
+        <div class="footer-qr">
+          <div class="qr-sq"></div><div class="qr-sq"></div><div class="qr-sq"></div><div class="qr-sq"></div>
+          <div class="qr-sq"></div><div style="background:transparent;"></div><div class="qr-sq"></div><div class="qr-sq"></div>
+          <div class="qr-sq"></div><div class="qr-sq"></div><div style="background:transparent;"></div><div class="qr-sq"></div>
+          <div class="qr-sq"></div><div class="qr-sq"></div><div class="qr-sq"></div><div class="qr-sq"></div>
+        </div>
+      </div>
+    </footer>
+
+  </div>
+
+</body>
+</html>

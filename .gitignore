@@ -6,11 +6,11 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
-frontend/node_modules/
-frontend/dist/
-frontend/*.tsbuildinfo
-frontend/vite.config.js
-frontend/vite.config.d.ts
+frontend-redesign/node_modules/
+frontend-redesign/dist/
+frontend-redesign/*.tsbuildinfo
+frontend-redesign/vite.config.js
+frontend-redesign/vite.config.d.ts
 
 backend/decision_rewind.db
 backend/decision_rewind.db-*

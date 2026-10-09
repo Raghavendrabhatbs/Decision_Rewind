@@ -185,11 +185,12 @@ Decision_Rewind/
 │   ├── tests/               # Backend unit and API tests
 │   ├── requirements.txt
 │   └── README.md
-├── frontend/
+├── frontend-redesign/
 │   ├── src/
 │   │   ├── App.tsx          # Dashboard, API calls, workflow UI
-│   │   ├── index.css        # Dark dashboard styles
+│   │   ├── index.css        # Modern dashboard styles
 │   │   └── main.tsx         # React entry point
+│   ├── public/              # Logos, videos, and research poster
 │   ├── index.html
 │   ├── package.json
 │   ├── package-lock.json
@@ -207,7 +208,7 @@ Runtime-generated paths are intentionally ignored by Git:
 - `data/` for datasets and `universal_log.jsonl`
 - `backend/decision_rewind.db` for SQLite state
 - `backend/app/ml/trained/` for model artifacts and metrics
-- `frontend/node_modules/` and `frontend/dist/`
+- `frontend-redesign/node_modules/` and `frontend-redesign/dist/`
 
 ## Prerequisites
 
@@ -237,7 +238,7 @@ py -3.11 -m pip install -r backend/requirements.txt
 ### 3. Install frontend dependencies
 
 ```powershell
-cd frontend
+cd frontend-redesign
 npm install
 cd ..
 ```
@@ -297,7 +298,7 @@ The API is available at `http://localhost:8000`. FastAPI's generated documentati
 In a second terminal:
 
 ```powershell
-cd frontend
+cd frontend-redesign
 npm run dev -- --host 0.0.0.0
 ```
 
@@ -333,7 +334,7 @@ The compose commands install dependencies at container startup. No separate prod
 
 ### Frontend `package.json` scripts
 
-Run these commands from `frontend/`:
+Run these commands from `frontend-redesign/`:
 
 | Command | Description |
 | --- | --- |
@@ -472,11 +473,11 @@ No frontend test runner or frontend test files were detected. No coverage config
 Build the frontend production bundle:
 
 ```powershell
-cd frontend
+cd frontend-redesign
 npm run build
 ```
 
-The build runs `tsc -b` followed by `vite build` and writes output to `frontend/dist/`. The backend is interpreted Python and has no separate compilation step.
+The build runs `tsc -b` followed by `vite build` and writes output to `frontend-redesign/dist/`. The backend is interpreted Python and has no separate compilation step.
 
 For a separate model evaluation report:
 
@@ -607,7 +608,7 @@ For a local contribution workflow:
 1. Create a focused branch.
 2. Install backend and frontend dependencies.
 3. Run `py -3.11 -m pytest backend/tests`.
-4. Run `npm run build` from `frontend/`.
+4. Run `npm run build` from `frontend-redesign/`.
 5. Update directly affected documentation and tests.
 6. Keep generated runtime data, model artifacts, secrets, and local databases out of commits.
 7. Open a pull request describing the change, validation performed, and any workflow or security implications.

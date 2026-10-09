@@ -166,5 +166,7 @@ def build_llm_evidence(
         question,
         references=references,
         filters=references,
+        event_limit=12,
+        context_limit=6000,
     )
     return evidence

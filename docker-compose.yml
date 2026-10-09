@@ -1,4 +1,4 @@
-version: '3.9'
+version: "3.9"
 
 services:
   backend:
@@ -18,7 +18,7 @@ services:
 
   frontend:
     image: node:20-alpine
-    working_dir: /app/frontend
+    working_dir: /app/frontend-redesign
     volumes:
       - .:/app
     command: sh -lc "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
